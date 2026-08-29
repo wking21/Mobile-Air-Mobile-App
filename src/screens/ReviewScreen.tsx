@@ -2,6 +2,7 @@ import React, { useMemo, useState } from 'react';
 import { FlatList, StyleSheet, Text, View } from 'react-native';
 import { Card } from '../components/Card';
 import { Divider } from '../components/Divider';
+import { ReconciliationDetailSheet } from '../components/ReconciliationDetailSheet';
 import { ReconciliationRow } from '../components/ReconciliationRow';
 import { ScreenHeader } from '../components/ScreenHeader';
 import { SegmentedControl } from '../components/SegmentedControl';
@@ -10,8 +11,9 @@ import { useAppData } from '../state/AppContext';
 import { ReviewFilter } from '../types';
 
 export function ReviewScreen() {
-  const { branches, reconciliation, branchName, itemName, toggleReviewed } = useAppData();
+  const { branches, reconciliation, deliveries, pickups, branchName, itemName, toggleReviewed } = useAppData();
   const [filter, setFilter] = useState<ReviewFilter>('All');
+  const [selectedKey, setSelectedKey] = useState<string | null>(null);
 
   const filteredRows = useMemo(() => {
     if (filter === 'Pending') return reconciliation.filter(r => r.status === 'Pending');
@@ -29,6 +31,15 @@ export function ReviewScreen() {
         .filter(g => g.rows.length > 0),
     [branches, filteredRows]
   );
+
+  const selectedRow = reconciliation.find(r => r.key === selectedKey) ?? null;
+  const sortByDateDesc = (a: { date: string }, b: { date: string }) => (a.date < b.date ? 1 : -1);
+  const selectedDeliveries = selectedRow
+    ? deliveries.filter(d => d.branchId === selectedRow.branchId && d.itemId === selectedRow.itemId).sort(sortByDateDesc)
+    : [];
+  const selectedPickups = selectedRow
+    ? pickups.filter(p => p.branchId === selectedRow.branchId && p.itemId === selectedRow.itemId).sort(sortByDateDesc)
+    : [];
 
   return (
     <View style={styles.screen}>
@@ -59,6 +70,7 @@ export function ReviewScreen() {
                       status={row.status}
                       canReview={!row.isDiscrepancy}
                       onToggleReview={() => toggleReviewed(row.key)}
+                      onPress={() => setSelectedKey(row.key)}
                     />
                   )}
                 />
@@ -67,6 +79,21 @@ export function ReviewScreen() {
           )}
         />
       </View>
+
+      <ReconciliationDetailSheet
+        visible={!!selectedRow}
+        onClose={() => setSelectedKey(null)}
+        branchName={selectedRow ? branchName(selectedRow.branchId) : ''}
+        itemName={selectedRow ? itemName(selectedRow.itemId) : ''}
+        delivered={selectedRow?.delivered ?? 0}
+        picked={selectedRow?.picked ?? 0}
+        onHand={selectedRow?.onHand ?? 0}
+        status={selectedRow?.status ?? 'Pending'}
+        canReview={!!selectedRow && !selectedRow.isDiscrepancy}
+        onToggleReview={() => selectedRow && toggleReviewed(selectedRow.key)}
+        deliveryEntries={selectedDeliveries}
+        pickupEntries={selectedPickups}
+      />
     </View>
   );
 }
