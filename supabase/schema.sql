@@ -59,9 +59,90 @@ create table if not exists reconciliation_reviews (
   primary key (branch_id, item_id)
 );
 
--- Seed data — mirrors src/data/mockData.ts so the app has the same demo
--- content it already had, now coming from a shared database instead of an
--- in-memory array per device.
+-- One row per active loss investigation for a (branch, item) pair.
+-- Auto-created/kept current by the trigger below whenever completed
+-- deliveries/pickups leave that pair's on-hand count negative. Workflow:
+-- 'open' (detected, needs an owner + explanation) -> 'pending_approval'
+-- (owner submitted resolution_notes) -> 'resolved' (approver signed off).
+-- An approver can also reject a pending case back to 'open' with
+-- rejection_notes explaining why. Note: with no auth yet, assigned_to /
+-- approved_by are free-text names/emails, not real user references — that
+-- tightens up once Microsoft sign-in is added.
+create table if not exists equipment_losses (
+  id uuid primary key default gen_random_uuid(),
+  branch_id bigint not null references branches(id),
+  item_id bigint not null references item_master(id),
+  quantity_missing integer not null,
+  estimated_cost numeric not null,
+  status text not null default 'open' check (status in ('open', 'pending_approval', 'resolved')),
+  assigned_to text,
+  resolution_notes text,
+  submitted_for_approval_at timestamptz,
+  approved_by text,
+  approved_at timestamptz,
+  rejection_notes text,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
+);
+
+-- Recomputes on-hand for the (branch, item) pair the changed row belongs to
+-- and opens (or refreshes the numbers on) a loss case when it's negative.
+-- Only ever opens ONE case per pair at a time — if one is already open or
+-- pending approval, its quantity/cost gets updated in place instead of a
+-- duplicate case being created.
+create or replace function check_for_equipment_loss() returns trigger as $$
+declare
+  v_branch_id bigint := coalesce(new.branch_id, old.branch_id);
+  v_item_id bigint := coalesce(new.item_id, old.item_id);
+  v_delivered numeric;
+  v_picked numeric;
+  v_on_hand numeric;
+  v_unit_cost numeric;
+  v_existing_case uuid;
+begin
+  select coalesce(sum(coalesce(confirmed_qty, qty)), 0) into v_delivered
+    from deliveries where branch_id = v_branch_id and item_id = v_item_id and status = 'completed';
+  select coalesce(sum(coalesce(confirmed_qty, qty)), 0) into v_picked
+    from pickups where branch_id = v_branch_id and item_id = v_item_id and status = 'completed';
+
+  v_on_hand := v_delivered - v_picked;
+
+  if v_on_hand < 0 then
+    select id into v_existing_case from equipment_losses
+      where branch_id = v_branch_id and item_id = v_item_id and status in ('open', 'pending_approval')
+      limit 1;
+
+    select unit_cost into v_unit_cost from item_master where id = v_item_id;
+
+    if v_existing_case is null then
+      insert into equipment_losses (branch_id, item_id, quantity_missing, estimated_cost)
+        values (v_branch_id, v_item_id, abs(v_on_hand)::integer, abs(v_on_hand) * v_unit_cost);
+    else
+      update equipment_losses
+        set quantity_missing = abs(v_on_hand)::integer,
+            estimated_cost = abs(v_on_hand) * v_unit_cost,
+            updated_at = now()
+        where id = v_existing_case;
+    end if;
+  end if;
+
+  return coalesce(new, old);
+end;
+$$ language plpgsql;
+
+drop trigger if exists trg_deliveries_check_loss on deliveries;
+create trigger trg_deliveries_check_loss
+  after insert or update on deliveries
+  for each row execute function check_for_equipment_loss();
+
+drop trigger if exists trg_pickups_check_loss on pickups;
+create trigger trg_pickups_check_loss
+  after insert or update on pickups
+  for each row execute function check_for_equipment_loss();
+
+-- Seed data — the same demo branches/items/deliveries/pickups the app
+-- originally shipped with as in-memory mocks, now coming from a shared
+-- database instead of a per-device array.
 insert into branches (id, name, region, service_manager_email) values
   (1, 'North Branch', 'North', 'north.manager@example.com'),
   (2, 'South Branch', 'South', 'south.manager@example.com'),
@@ -108,6 +189,7 @@ alter table item_master enable row level security;
 alter table deliveries enable row level security;
 alter table pickups enable row level security;
 alter table reconciliation_reviews enable row level security;
+alter table equipment_losses enable row level security;
 
 drop policy if exists "anon full access" on branches;
 create policy "anon full access" on branches for all using (true) with check (true);
@@ -123,6 +205,9 @@ create policy "anon full access" on pickups for all using (true) with check (tru
 
 drop policy if exists "anon full access" on reconciliation_reviews;
 create policy "anon full access" on reconciliation_reviews for all using (true) with check (true);
+
+drop policy if exists "anon full access" on equipment_losses;
+create policy "anon full access" on equipment_losses for all using (true) with check (true);
 
 -- Realtime: push live inserts/updates for these tables to subscribed clients
 -- so multiple technicians/branches see the same data without refreshing.
@@ -146,5 +231,11 @@ begin
     where pubname = 'supabase_realtime' and tablename = 'reconciliation_reviews'
   ) then
     alter publication supabase_realtime add table reconciliation_reviews;
+  end if;
+  if not exists (
+    select 1 from pg_publication_tables
+    where pubname = 'supabase_realtime' and tablename = 'equipment_losses'
+  ) then
+    alter publication supabase_realtime add table equipment_losses;
   end if;
 end $$;

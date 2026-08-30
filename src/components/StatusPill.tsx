@@ -2,7 +2,15 @@ import React from 'react';
 import { StyleSheet, Text, View } from 'react-native';
 import { colors, radii, type } from '../theme';
 
-type Status = 'Pending' | 'Reviewed' | 'Discrepancy' | 'Planned' | 'Completed';
+type Status =
+  | 'Pending'
+  | 'Reviewed'
+  | 'Discrepancy'
+  | 'Planned'
+  | 'Completed'
+  | 'Open'
+  | 'Pending Approval'
+  | 'Resolved';
 
 const STYLES: Record<Status, { bg: string; fg: string }> = {
   Pending: { bg: colors.warnBg, fg: colors.warn },
@@ -10,6 +18,9 @@ const STYLES: Record<Status, { bg: string; fg: string }> = {
   Discrepancy: { bg: colors.badBg, fg: colors.bad },
   Planned: { bg: colors.warnBg, fg: colors.warn },
   Completed: { bg: colors.goodBg, fg: colors.good },
+  Open: { bg: colors.badBg, fg: colors.bad },
+  'Pending Approval': { bg: colors.warnBg, fg: colors.warn },
+  Resolved: { bg: colors.goodBg, fg: colors.good },
 };
 
 export function StatusPill({ status }: { status: Status }) {

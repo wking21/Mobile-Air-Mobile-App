@@ -8,7 +8,7 @@ interface Props {
   delivered: number;
   picked: number;
   onHand: number;
-  status: 'Pending' | 'Reviewed' | 'Discrepancy';
+  status: 'Pending' | 'Reviewed' | 'Discrepancy' | 'Open' | 'Pending Approval' | 'Resolved';
   canReview: boolean;
   onToggleReview: () => void;
   onPress: () => void;

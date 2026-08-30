@@ -7,17 +7,20 @@ interface Props {
   onPress: () => void;
   variant?: 'filled' | 'outline';
   style?: ViewStyle;
+  disabled?: boolean;
 }
 
-export function ActionButton({ label, onPress, variant = 'filled', style }: Props) {
+export function ActionButton({ label, onPress, variant = 'filled', style, disabled = false }: Props) {
   const filled = variant === 'filled';
   return (
     <Pressable
       onPress={onPress}
+      disabled={disabled}
       style={({ pressed }) => [
         styles.base,
         filled ? styles.filled : styles.outline,
         pressed ? { opacity: 0.8 } : null,
+        disabled ? styles.disabled : null,
         style,
       ]}
     >
@@ -43,4 +46,5 @@ const styles = StyleSheet.create({
   label: { ...type.button },
   filledLabel: { color: colors.white },
   outlineLabel: { color: colors.accent },
+  disabled: { opacity: 0.4 },
 });

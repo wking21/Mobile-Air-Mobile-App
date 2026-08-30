@@ -11,13 +11,16 @@ import { useAppData } from '../state/AppContext';
 import { useSheet } from '../state/SheetContext';
 
 export function HomeScreen() {
-  const { deliveries, pickups, reconciliation, branchName, itemName } = useAppData();
+  const { deliveries, pickups, reconciliation, lossCases, branchName, itemName } = useAppData();
   const { openDeliverSheet, openPickupSheet } = useSheet();
 
   const openDeliveries = deliveries.filter(d => d.status === 'planned').length;
   const openPickups = pickups.filter(p => p.status === 'planned').length;
   const pendingCount = reconciliation.filter(r => r.status === 'Pending').length;
-  const discrepancyCount = reconciliation.filter(r => r.isDiscrepancy).length;
+  // Active loss cases (not yet resolved), not raw math mismatches — a
+  // discrepancy that's been investigated and resolved shouldn't still read
+  // as an open problem here even though the underlying numbers stay off.
+  const discrepancyCount = lossCases.filter(l => l.status !== 'resolved').length;
 
   const recentActivity = useMemo(() => {
     const combined = [

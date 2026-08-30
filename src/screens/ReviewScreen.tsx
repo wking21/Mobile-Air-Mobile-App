@@ -2,6 +2,7 @@ import React, { useMemo, useState } from 'react';
 import { FlatList, StyleSheet, Text, View } from 'react-native';
 import { Card } from '../components/Card';
 import { Divider } from '../components/Divider';
+import { LossCaseSheet } from '../components/LossCaseSheet';
 import { ReconciliationDetailSheet } from '../components/ReconciliationDetailSheet';
 import { ReconciliationRow } from '../components/ReconciliationRow';
 import { ScreenHeader } from '../components/ScreenHeader';
@@ -10,10 +11,34 @@ import { colors, spacing, type } from '../theme';
 import { useAppData } from '../state/AppContext';
 import { ReviewFilter } from '../types';
 
+const LOSS_STATUS_LABEL = {
+  open: 'Open' as const,
+  pending_approval: 'Pending Approval' as const,
+  resolved: 'Resolved' as const,
+};
+
 export function ReviewScreen() {
-  const { branches, reconciliation, deliveries, pickups, branchName, itemName, toggleReviewed } = useAppData();
+  const {
+    branches,
+    reconciliation,
+    deliveries,
+    pickups,
+    lossCases,
+    branchName,
+    itemName,
+    toggleReviewed,
+    assignLoss,
+    submitLoss,
+    approveLossCase,
+    rejectLossCase,
+  } = useAppData();
   const [filter, setFilter] = useState<ReviewFilter>('All');
   const [selectedKey, setSelectedKey] = useState<string | null>(null);
+
+  const activeLossFor = (branchId: number, itemId: number) =>
+    lossCases.find(l => l.branchId === branchId && l.itemId === itemId && l.status !== 'resolved') ??
+    lossCases.find(l => l.branchId === branchId && l.itemId === itemId) ??
+    null;
 
   const filteredRows = useMemo(() => {
     if (filter === 'Pending') return reconciliation.filter(r => r.status === 'Pending');
@@ -33,21 +58,23 @@ export function ReviewScreen() {
   );
 
   const selectedRow = reconciliation.find(r => r.key === selectedKey) ?? null;
+  const selectedLoss = selectedRow?.isDiscrepancy ? activeLossFor(selectedRow.branchId, selectedRow.itemId) : null;
+
   const sortByDateDesc = (a: { date: string }, b: { date: string }) => (a.date < b.date ? 1 : -1);
-  // Only completed entries feed reconciliation totals, so the breakdown
-  // shown here should match: confirmed qty, completed entries only.
-  const selectedDeliveries = selectedRow
-    ? deliveries
-        .filter(d => d.status === 'completed' && d.branchId === selectedRow.branchId && d.itemId === selectedRow.itemId)
-        .map(d => ({ ...d, qty: d.confirmedQty ?? d.qty }))
-        .sort(sortByDateDesc)
-    : [];
-  const selectedPickups = selectedRow
-    ? pickups
-        .filter(p => p.status === 'completed' && p.branchId === selectedRow.branchId && p.itemId === selectedRow.itemId)
-        .map(p => ({ ...p, qty: p.confirmedQty ?? p.qty }))
-        .sort(sortByDateDesc)
-    : [];
+  const selectedDeliveries =
+    selectedRow && !selectedRow.isDiscrepancy
+      ? deliveries
+          .filter(d => d.status === 'completed' && d.branchId === selectedRow.branchId && d.itemId === selectedRow.itemId)
+          .map(d => ({ ...d, qty: d.confirmedQty ?? d.qty }))
+          .sort(sortByDateDesc)
+      : [];
+  const selectedPickups =
+    selectedRow && !selectedRow.isDiscrepancy
+      ? pickups
+          .filter(p => p.status === 'completed' && p.branchId === selectedRow.branchId && p.itemId === selectedRow.itemId)
+          .map(p => ({ ...p, qty: p.confirmedQty ?? p.qty }))
+          .sort(sortByDateDesc)
+      : [];
 
   return (
     <View style={styles.screen}>
@@ -69,18 +96,22 @@ export function ReviewScreen() {
                   keyExtractor={r => r.key}
                   scrollEnabled={false}
                   ItemSeparatorComponent={Divider}
-                  renderItem={({ item: row }) => (
-                    <ReconciliationRow
-                      itemName={itemName(row.itemId)}
-                      delivered={row.delivered}
-                      picked={row.picked}
-                      onHand={row.onHand}
-                      status={row.status}
-                      canReview={!row.isDiscrepancy}
-                      onToggleReview={() => toggleReviewed(row.key)}
-                      onPress={() => setSelectedKey(row.key)}
-                    />
-                  )}
+                  renderItem={({ item: row }) => {
+                    const loss = row.isDiscrepancy ? activeLossFor(row.branchId, row.itemId) : null;
+                    const displayStatus = loss ? LOSS_STATUS_LABEL[loss.status] : row.status;
+                    return (
+                      <ReconciliationRow
+                        itemName={itemName(row.itemId)}
+                        delivered={row.delivered}
+                        picked={row.picked}
+                        onHand={row.onHand}
+                        status={displayStatus}
+                        canReview={!row.isDiscrepancy}
+                        onToggleReview={() => toggleReviewed(row.key)}
+                        onPress={() => setSelectedKey(row.key)}
+                      />
+                    );
+                  }}
                 />
               </Card>
             </View>
@@ -89,7 +120,7 @@ export function ReviewScreen() {
       </View>
 
       <ReconciliationDetailSheet
-        visible={!!selectedRow}
+        visible={!!selectedRow && !selectedRow.isDiscrepancy}
         onClose={() => setSelectedKey(null)}
         branchName={selectedRow ? branchName(selectedRow.branchId) : ''}
         itemName={selectedRow ? itemName(selectedRow.itemId) : ''}
@@ -101,6 +132,18 @@ export function ReviewScreen() {
         onToggleReview={() => selectedRow && toggleReviewed(selectedRow.key)}
         deliveryEntries={selectedDeliveries}
         pickupEntries={selectedPickups}
+      />
+
+      <LossCaseSheet
+        visible={!!selectedRow && selectedRow.isDiscrepancy}
+        onClose={() => setSelectedKey(null)}
+        branchName={selectedRow ? branchName(selectedRow.branchId) : ''}
+        itemName={selectedRow ? itemName(selectedRow.itemId) : ''}
+        lossCase={selectedLoss}
+        onAssign={assignedTo => selectedLoss && assignLoss(selectedLoss.id, assignedTo)}
+        onSubmit={notes => selectedLoss && submitLoss(selectedLoss.id, notes)}
+        onApprove={approvedBy => selectedLoss && approveLossCase(selectedLoss.id, approvedBy)}
+        onReject={notes => selectedLoss && rejectLossCase(selectedLoss.id, notes)}
       />
     </View>
   );

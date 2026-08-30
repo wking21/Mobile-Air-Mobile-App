@@ -19,6 +19,11 @@ realtime), shared live across every device.
 5. `npm start` — then press `i` (iOS simulator), `a` (Android emulator), or
    `w` (web), or scan the QR code with Expo Go on a phone.
 
+If you already ran `schema.sql` once on an existing project before a newer
+feature was added, run the matching file under `supabase/migrations/`
+instead of the whole script again — it applies just the delta and won't
+re-insert duplicate seed data.
+
 ## Structure
 
 - `supabase/schema.sql` — the database schema, demo seed data, RLS policies,
@@ -56,13 +61,24 @@ Matches the source spreadsheet/AppSheet app, plus a completion workflow:
   completion_notes
 - **reconciliation_reviews**: (branch_id, item_id) marked reviewed in the
   Review tab
+- **equipment_losses**: auto-opened by a database trigger whenever a
+  (branch_id, item_id) pair's on-hand count goes negative — `quantity_missing`,
+  `estimated_cost` (unit_cost × quantity_missing), and a `status` workflow
+  (`open` → `pending_approval` → `resolved`, with `assigned_to` /
+  `resolution_notes` / `approved_by` / `rejection_notes` along the way)
 
 A delivery/pickup starts `planned` when logged, then a field technician
 confirms the actual quantity handled to mark it `completed`. Reconciliation
 is a computed join over *completed* deliveries + pickups grouped by
 (branch_id, item_id) — not a stored table — using each entry's confirmed
 quantity. `onHand < 0` flags a discrepancy (more was picked up than
-delivered).
+delivered) and the trigger opens (or updates the numbers on) a loss case for
+it — see `supabase/schema.sql`'s `check_for_equipment_loss()` function.
+
+Note: `assigned_to` and `approved_by` are free-text names/emails, not real
+user references, since there's no login yet — anyone with the app can act as
+either the owner or the approver on a loss case. That tightens up once
+Microsoft sign-in is added.
 
 ## Security note
 

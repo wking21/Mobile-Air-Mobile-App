@@ -51,3 +51,22 @@ export interface ReconciliationRow {
   isReviewed: boolean;
   status: 'Discrepancy' | 'Reviewed' | 'Pending';
 }
+
+export type LossStatus = 'open' | 'pending_approval' | 'resolved';
+
+export interface EquipmentLoss {
+  id: string;
+  branchId: number;
+  itemId: number;
+  quantityMissing: number;
+  estimatedCost: number;
+  status: LossStatus;
+  assignedTo?: string;
+  resolutionNotes?: string;
+  submittedForApprovalAt?: string;
+  approvedBy?: string;
+  approvedAt?: string;
+  rejectionNotes?: string;
+  createdAt: string;
+  updatedAt: string;
+}

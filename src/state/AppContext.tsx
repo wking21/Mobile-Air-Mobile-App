@@ -1,5 +1,7 @@
 import React, { createContext, useCallback, useContext, useEffect, useMemo, useState } from 'react';
 import {
+  approveLoss,
+  assignLossOwner,
   completeDelivery,
   completePickup,
   createDelivery,
@@ -7,12 +9,23 @@ import {
   fetchBranches,
   fetchDeliveries,
   fetchItems,
+  fetchLossCases,
   fetchPickups,
   fetchReviewedKeys,
+  rejectLoss,
   setReviewed,
   subscribeToRealtimeChanges,
+  submitLossResolution,
 } from '../api/dataService';
-import { Branch, CompleteLineItemInput, ItemMaster, LineItem, NewLineItemInput, ReconciliationRow } from '../types';
+import {
+  Branch,
+  CompleteLineItemInput,
+  EquipmentLoss,
+  ItemMaster,
+  LineItem,
+  NewLineItemInput,
+  ReconciliationRow,
+} from '../types';
 
 interface AppContextValue {
   branches: Branch[];
@@ -21,6 +34,7 @@ interface AppContextValue {
   pickups: LineItem[];
   reconciliation: ReconciliationRow[];
   reviewedKeys: Record<string, boolean>;
+  lossCases: EquipmentLoss[];
   branchName: (id: number) => string;
   itemName: (id: number) => string;
   addDelivery: (input: NewLineItemInput) => Promise<void>;
@@ -28,6 +42,10 @@ interface AppContextValue {
   completeDeliveryEntry: (input: CompleteLineItemInput) => Promise<void>;
   completePickupEntry: (input: CompleteLineItemInput) => Promise<void>;
   toggleReviewed: (key: string) => Promise<void>;
+  assignLoss: (id: string, assignedTo: string) => Promise<void>;
+  submitLoss: (id: string, resolutionNotes: string) => Promise<void>;
+  approveLossCase: (id: string, approvedBy: string) => Promise<void>;
+  rejectLossCase: (id: string, rejectionNotes: string) => Promise<void>;
 }
 
 const AppContext = createContext<AppContextValue | undefined>(undefined);
@@ -47,11 +65,13 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   const [deliveries, setDeliveries] = useState<LineItem[]>([]);
   const [pickups, setPickups] = useState<LineItem[]>([]);
   const [reviewedKeys, setReviewedKeys] = useState<Record<string, boolean>>({});
+  const [lossCases, setLossCases] = useState<EquipmentLoss[]>([]);
 
   const refetchLiveData = useCallback(() => {
     fetchDeliveries().then(setDeliveries).catch(err => console.error('Failed to load deliveries', err));
     fetchPickups().then(setPickups).catch(err => console.error('Failed to load pickups', err));
     fetchReviewedKeys().then(setReviewedKeys).catch(err => console.error('Failed to load reviewed status', err));
+    fetchLossCases().then(setLossCases).catch(err => console.error('Failed to load loss cases', err));
   }, []);
 
   useEffect(() => {
@@ -105,6 +125,26 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     [reviewedKeys]
   );
 
+  const assignLoss = useCallback(async (id: string, assignedTo: string) => {
+    await assignLossOwner(id, assignedTo);
+    setLossCases(await fetchLossCases());
+  }, []);
+
+  const submitLoss = useCallback(async (id: string, resolutionNotes: string) => {
+    await submitLossResolution(id, resolutionNotes);
+    setLossCases(await fetchLossCases());
+  }, []);
+
+  const approveLossCase = useCallback(async (id: string, approvedBy: string) => {
+    await approveLoss(id, approvedBy);
+    setLossCases(await fetchLossCases());
+  }, []);
+
+  const rejectLossCase = useCallback(async (id: string, rejectionNotes: string) => {
+    await rejectLoss(id, rejectionNotes);
+    setLossCases(await fetchLossCases());
+  }, []);
+
   // Reconciliation is derived, never stored: for each (branch, item) pair,
   // onHand = sum(delivered qty) - sum(picked-up qty), counting only entries a
   // technician has confirmed completed (a planned-but-unconfirmed delivery or
@@ -153,6 +193,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     pickups,
     reconciliation,
     reviewedKeys,
+    lossCases,
     branchName,
     itemName,
     addDelivery,
@@ -160,6 +201,10 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     completeDeliveryEntry,
     completePickupEntry,
     toggleReviewed,
+    assignLoss,
+    submitLoss,
+    approveLossCase,
+    rejectLossCase,
   };
 
   return <AppContext.Provider value={value}>{children}</AppContext.Provider>;

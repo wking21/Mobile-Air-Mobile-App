@@ -1,4 +1,4 @@
-import { Branch, CompleteLineItemInput, ItemMaster, LineItem, NewLineItemInput } from '../types';
+import { Branch, CompleteLineItemInput, EquipmentLoss, ItemMaster, LineItem, NewLineItemInput } from '../types';
 import { supabase } from './supabaseClient';
 
 // Data-access layer backed by Supabase (Postgres + realtime). This is the
@@ -140,6 +140,85 @@ export async function setReviewed(branchId: number, itemId: number, reviewed: bo
   }
 }
 
+interface DbEquipmentLoss {
+  id: string;
+  branch_id: number;
+  item_id: number;
+  quantity_missing: number;
+  estimated_cost: number;
+  status: 'open' | 'pending_approval' | 'resolved';
+  assigned_to: string | null;
+  resolution_notes: string | null;
+  submitted_for_approval_at: string | null;
+  approved_by: string | null;
+  approved_at: string | null;
+  rejection_notes: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+function fromDbLoss(row: DbEquipmentLoss): EquipmentLoss {
+  return {
+    id: row.id,
+    branchId: row.branch_id,
+    itemId: row.item_id,
+    quantityMissing: row.quantity_missing,
+    estimatedCost: Number(row.estimated_cost),
+    status: row.status,
+    assignedTo: row.assigned_to ?? undefined,
+    resolutionNotes: row.resolution_notes ?? undefined,
+    submittedForApprovalAt: row.submitted_for_approval_at ?? undefined,
+    approvedBy: row.approved_by ?? undefined,
+    approvedAt: row.approved_at ?? undefined,
+    rejectionNotes: row.rejection_notes ?? undefined,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  };
+}
+
+// Loss cases are auto-created/updated by a database trigger whenever a
+// branch+item pair's on-hand count goes negative (see supabase/schema.sql) —
+// this module only ever reads them and moves them through the owner/approval
+// workflow, it never opens or closes a case's underlying discrepancy itself.
+export async function fetchLossCases(): Promise<EquipmentLoss[]> {
+  const { data, error } = await supabase.from('equipment_losses').select('*').order('created_at', { ascending: false });
+  if (error) throw error;
+  return (data as DbEquipmentLoss[]).map(fromDbLoss);
+}
+
+export async function assignLossOwner(id: string, assignedTo: string): Promise<void> {
+  const { error } = await supabase.from('equipment_losses').update({ assigned_to: assignedTo }).eq('id', id);
+  if (error) throw error;
+}
+
+export async function submitLossResolution(id: string, resolutionNotes: string): Promise<void> {
+  const { error } = await supabase
+    .from('equipment_losses')
+    .update({
+      status: 'pending_approval',
+      resolution_notes: resolutionNotes,
+      submitted_for_approval_at: new Date().toISOString(),
+    })
+    .eq('id', id);
+  if (error) throw error;
+}
+
+export async function approveLoss(id: string, approvedBy: string): Promise<void> {
+  const { error } = await supabase
+    .from('equipment_losses')
+    .update({ status: 'resolved', approved_by: approvedBy, approved_at: new Date().toISOString() })
+    .eq('id', id);
+  if (error) throw error;
+}
+
+export async function rejectLoss(id: string, rejectionNotes: string): Promise<void> {
+  const { error } = await supabase
+    .from('equipment_losses')
+    .update({ status: 'open', rejection_notes: rejectionNotes })
+    .eq('id', id);
+  if (error) throw error;
+}
+
 // One realtime channel covering everything the app needs to stay in sync
 // across devices. Callers get a single onChange callback — simplest to
 // reason about at this data volume; re-fetches the affected list rather
@@ -150,6 +229,7 @@ export function subscribeToRealtimeChanges(onChange: () => void): () => void {
     .on('postgres_changes', { event: '*', schema: 'public', table: 'deliveries' }, onChange)
     .on('postgres_changes', { event: '*', schema: 'public', table: 'pickups' }, onChange)
     .on('postgres_changes', { event: '*', schema: 'public', table: 'reconciliation_reviews' }, onChange)
+    .on('postgres_changes', { event: '*', schema: 'public', table: 'equipment_losses' }, onChange)
     .subscribe();
 
   return () => {
