@@ -2,12 +2,14 @@ import React from 'react';
 import { StyleSheet, Text, View } from 'react-native';
 import { colors, radii, type } from '../theme';
 
-type Status = 'Pending' | 'Reviewed' | 'Discrepancy';
+type Status = 'Pending' | 'Reviewed' | 'Discrepancy' | 'Planned' | 'Completed';
 
 const STYLES: Record<Status, { bg: string; fg: string }> = {
   Pending: { bg: colors.warnBg, fg: colors.warn },
   Reviewed: { bg: colors.goodBg, fg: colors.good },
   Discrepancy: { bg: colors.badBg, fg: colors.bad },
+  Planned: { bg: colors.warnBg, fg: colors.warn },
+  Completed: { bg: colors.goodBg, fg: colors.good },
 };
 
 export function StatusPill({ status }: { status: Status }) {

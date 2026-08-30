@@ -21,20 +21,24 @@ export const ITEMS: ItemMaster[] = [
   { id: 8, name: 'Hand Dolly', category: 'Equipment', unitCost: 60 },
 ];
 
+// Seed entries are historical, already-fulfilled events, so they're seeded
+// as 'completed' with confirmedQty matching the planned qty. Newly created
+// entries (see dataService.createDelivery/createPickup) start 'planned'
+// until a technician confirms them.
 export const DELIVERIES: LineItem[] = [
-  { id: 'd1', branchId: 1, itemId: 1, qty: 20, date: '2026-08-10', notes: 'Event setup' },
-  { id: 'd2', branchId: 1, itemId: 3, qty: 2, date: '2026-08-10', notes: '' },
-  { id: 'd3', branchId: 2, itemId: 4, qty: 1, date: '2026-08-12', notes: 'Backup power' },
-  { id: 'd4', branchId: 3, itemId: 6, qty: 10, date: '2026-08-15', notes: '' },
-  { id: 'd5', branchId: 4, itemId: 2, qty: 50, date: '2026-08-18', notes: 'Conference' },
-  { id: 'd6', branchId: 2, itemId: 4, qty: 1, date: '2026-08-20', notes: 'Second unit' },
-  { id: 'd7', branchId: 1, itemId: 1, qty: 10, date: '2026-08-22', notes: '' },
+  { id: 'd1', branchId: 1, itemId: 1, qty: 20, date: '2026-08-10', notes: 'Event setup', status: 'completed', confirmedQty: 20, completedAt: '2026-08-10', completionNotes: '' },
+  { id: 'd2', branchId: 1, itemId: 3, qty: 2, date: '2026-08-10', notes: '', status: 'completed', confirmedQty: 2, completedAt: '2026-08-10', completionNotes: '' },
+  { id: 'd3', branchId: 2, itemId: 4, qty: 1, date: '2026-08-12', notes: 'Backup power', status: 'completed', confirmedQty: 1, completedAt: '2026-08-12', completionNotes: '' },
+  { id: 'd4', branchId: 3, itemId: 6, qty: 10, date: '2026-08-15', notes: '', status: 'completed', confirmedQty: 10, completedAt: '2026-08-15', completionNotes: '' },
+  { id: 'd5', branchId: 4, itemId: 2, qty: 50, date: '2026-08-18', notes: 'Conference', status: 'completed', confirmedQty: 50, completedAt: '2026-08-18', completionNotes: '' },
+  { id: 'd6', branchId: 2, itemId: 4, qty: 1, date: '2026-08-20', notes: 'Second unit', status: 'completed', confirmedQty: 1, completedAt: '2026-08-20', completionNotes: '' },
+  { id: 'd7', branchId: 1, itemId: 1, qty: 10, date: '2026-08-22', notes: '', status: 'completed', confirmedQty: 10, completedAt: '2026-08-22', completionNotes: '' },
 ];
 
 export const PICKUPS: LineItem[] = [
-  { id: 'p1', branchId: 1, itemId: 1, qty: 18, date: '2026-08-20', notes: 'Partial return' },
-  { id: 'p2', branchId: 2, itemId: 4, qty: 2, date: '2026-08-25', notes: 'Both units returned' },
-  { id: 'p3', branchId: 3, itemId: 6, qty: 4, date: '2026-08-24', notes: '' },
-  { id: 'p4', branchId: 4, itemId: 2, qty: 50, date: '2026-08-24', notes: '' },
-  { id: 'p5', branchId: 1, itemId: 3, qty: 3, date: '2026-08-26', notes: '' },
+  { id: 'p1', branchId: 1, itemId: 1, qty: 18, date: '2026-08-20', notes: 'Partial return', status: 'completed', confirmedQty: 18, completedAt: '2026-08-20', completionNotes: '' },
+  { id: 'p2', branchId: 2, itemId: 4, qty: 2, date: '2026-08-25', notes: 'Both units returned', status: 'completed', confirmedQty: 2, completedAt: '2026-08-25', completionNotes: '' },
+  { id: 'p3', branchId: 3, itemId: 6, qty: 4, date: '2026-08-24', notes: '', status: 'completed', confirmedQty: 4, completedAt: '2026-08-24', completionNotes: '' },
+  { id: 'p4', branchId: 4, itemId: 2, qty: 50, date: '2026-08-24', notes: '', status: 'completed', confirmedQty: 50, completedAt: '2026-08-24', completionNotes: '' },
+  { id: 'p5', branchId: 1, itemId: 3, qty: 3, date: '2026-08-26', notes: '', status: 'completed', confirmedQty: 3, completedAt: '2026-08-26', completionNotes: '' },
 ];

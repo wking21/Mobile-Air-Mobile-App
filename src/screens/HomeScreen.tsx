@@ -14,6 +14,8 @@ export function HomeScreen() {
   const { deliveries, pickups, reconciliation, branchName, itemName } = useAppData();
   const { openDeliverSheet, openPickupSheet } = useSheet();
 
+  const openDeliveries = deliveries.filter(d => d.status === 'planned').length;
+  const openPickups = pickups.filter(p => p.status === 'planned').length;
   const pendingCount = reconciliation.filter(r => r.status === 'Pending').length;
   const discrepancyCount = reconciliation.filter(r => r.isDiscrepancy).length;
 
@@ -33,8 +35,8 @@ export function HomeScreen() {
       <ScreenHeader title="Overview" />
       <ScrollView contentContainerStyle={styles.content}>
         <View style={styles.statGrid}>
-          <StatCard label="Open deliveries" value={deliveries.length} />
-          <StatCard label="Open pickups" value={pickups.length} />
+          <StatCard label="Open deliveries" value={openDeliveries} />
+          <StatCard label="Open pickups" value={openPickups} />
           <StatCard label="Pending review" value={pendingCount} />
           <StatCard
             label="Discrepancies"

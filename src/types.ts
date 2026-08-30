@@ -12,19 +12,31 @@ export interface ItemMaster {
   unitCost: number;
 }
 
+export type LineItemStatus = 'planned' | 'completed';
+
 export interface LineItem {
   id: string;
   branchId: number;
   itemId: number;
-  qty: number;
+  qty: number; // planned quantity, logged at dispatch time
   date: string; // ISO yyyy-mm-dd
   notes: string;
+  status: LineItemStatus;
+  confirmedQty?: number; // actual qty the technician confirmed on completion
+  completedAt?: string; // ISO yyyy-mm-dd, set when marked completed
+  completionNotes?: string; // optional note captured on completion (e.g. explaining a qty mismatch)
 }
 
 export type Delivery = LineItem;
 export type Pickup = LineItem;
 
-export type NewLineItemInput = Omit<LineItem, 'id'>;
+export type NewLineItemInput = Omit<LineItem, 'id' | 'status' | 'confirmedQty' | 'completedAt' | 'completionNotes'>;
+
+export interface CompleteLineItemInput {
+  id: string;
+  confirmedQty: number;
+  completionNotes: string;
+}
 
 export type ReviewFilter = 'All' | 'Pending' | 'Discrepancy';
 

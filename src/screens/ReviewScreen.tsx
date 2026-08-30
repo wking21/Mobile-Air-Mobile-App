@@ -34,11 +34,19 @@ export function ReviewScreen() {
 
   const selectedRow = reconciliation.find(r => r.key === selectedKey) ?? null;
   const sortByDateDesc = (a: { date: string }, b: { date: string }) => (a.date < b.date ? 1 : -1);
+  // Only completed entries feed reconciliation totals, so the breakdown
+  // shown here should match: confirmed qty, completed entries only.
   const selectedDeliveries = selectedRow
-    ? deliveries.filter(d => d.branchId === selectedRow.branchId && d.itemId === selectedRow.itemId).sort(sortByDateDesc)
+    ? deliveries
+        .filter(d => d.status === 'completed' && d.branchId === selectedRow.branchId && d.itemId === selectedRow.itemId)
+        .map(d => ({ ...d, qty: d.confirmedQty ?? d.qty }))
+        .sort(sortByDateDesc)
     : [];
   const selectedPickups = selectedRow
-    ? pickups.filter(p => p.branchId === selectedRow.branchId && p.itemId === selectedRow.itemId).sort(sortByDateDesc)
+    ? pickups
+        .filter(p => p.status === 'completed' && p.branchId === selectedRow.branchId && p.itemId === selectedRow.itemId)
+        .map(p => ({ ...p, qty: p.confirmedQty ?? p.qty }))
+        .sort(sortByDateDesc)
     : [];
 
   return (

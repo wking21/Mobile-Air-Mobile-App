@@ -1,6 +1,7 @@
-import React, { useMemo } from 'react';
+import React, { useMemo, useState } from 'react';
 import { FlatList, Pressable, StyleSheet, Text, View } from 'react-native';
 import { Card } from '../components/Card';
+import { CompleteEntrySheet } from '../components/CompleteEntrySheet';
 import { Divider } from '../components/Divider';
 import { LineItemRow } from '../components/LineItemRow';
 import { ScreenHeader } from '../components/ScreenHeader';
@@ -9,16 +10,19 @@ import { useAppData } from '../state/AppContext';
 import { useSheet } from '../state/SheetContext';
 
 export function DeliveriesScreen() {
-  const { deliveries, branchName, itemName } = useAppData();
+  const { deliveries, branchName, itemName, completeDeliveryEntry } = useAppData();
   const { openDeliverSheet } = useSheet();
+  const [selectedId, setSelectedId] = useState<string | null>(null);
 
   const rows = useMemo(
     () =>
       [...deliveries]
-        .sort((a, b) => (a.id < b.id ? 1 : -1))
+        .sort((a, b) => (a.date === b.date ? (a.id < b.id ? 1 : -1) : a.date < b.date ? 1 : -1))
         .map(d => ({ ...d, branchName: branchName(d.branchId), itemName: itemName(d.itemId) })),
     [deliveries, branchName, itemName]
   );
+
+  const selected = deliveries.find(d => d.id === selectedId) ?? null;
 
   return (
     <View style={styles.screen}>
@@ -41,11 +45,27 @@ export function DeliveriesScreen() {
                 branchName={item.branchName}
                 date={item.date}
                 notes={item.notes}
+                status={item.status}
+                onPress={() => setSelectedId(item.id)}
               />
             )}
           />
         </Card>
       </View>
+
+      <CompleteEntrySheet
+        visible={!!selected}
+        entry={selected}
+        itemName={selected ? itemName(selected.itemId) : ''}
+        branchName={selected ? branchName(selected.branchId) : ''}
+        actionLabel="Delivery"
+        onClose={() => setSelectedId(null)}
+        onComplete={async (confirmedQty, completionNotes) => {
+          if (!selected) return;
+          await completeDeliveryEntry({ id: selected.id, confirmedQty, completionNotes });
+          setSelectedId(null);
+        }}
+      />
     </View>
   );
 }
