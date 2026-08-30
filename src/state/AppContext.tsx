@@ -8,6 +8,9 @@ import {
   fetchDeliveries,
   fetchItems,
   fetchPickups,
+  fetchReviewedKeys,
+  setReviewed,
+  subscribeToRealtimeChanges,
 } from '../api/dataService';
 import { Branch, CompleteLineItemInput, ItemMaster, LineItem, NewLineItemInput, ReconciliationRow } from '../types';
 
@@ -24,13 +27,18 @@ interface AppContextValue {
   addPickup: (input: NewLineItemInput) => Promise<void>;
   completeDeliveryEntry: (input: CompleteLineItemInput) => Promise<void>;
   completePickupEntry: (input: CompleteLineItemInput) => Promise<void>;
-  toggleReviewed: (key: string) => void;
+  toggleReviewed: (key: string) => Promise<void>;
 }
 
 const AppContext = createContext<AppContextValue | undefined>(undefined);
 
 export function reconciliationKey(branchId: number, itemId: number): string {
   return `${branchId}-${itemId}`;
+}
+
+function parseReconciliationKey(key: string): { branchId: number; itemId: number } {
+  const [branchId, itemId] = key.split('-').map(Number);
+  return { branchId, itemId };
 }
 
 export function AppProvider({ children }: { children: React.ReactNode }) {
@@ -40,12 +48,23 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   const [pickups, setPickups] = useState<LineItem[]>([]);
   const [reviewedKeys, setReviewedKeys] = useState<Record<string, boolean>>({});
 
-  useEffect(() => {
-    fetchBranches().then(setBranches);
-    fetchItems().then(setItems);
-    fetchDeliveries().then(setDeliveries);
-    fetchPickups().then(setPickups);
+  const refetchLiveData = useCallback(() => {
+    fetchDeliveries().then(setDeliveries).catch(err => console.error('Failed to load deliveries', err));
+    fetchPickups().then(setPickups).catch(err => console.error('Failed to load pickups', err));
+    fetchReviewedKeys().then(setReviewedKeys).catch(err => console.error('Failed to load reviewed status', err));
   }, []);
+
+  useEffect(() => {
+    fetchBranches().then(setBranches).catch(err => console.error('Failed to load branches', err));
+    fetchItems().then(setItems).catch(err => console.error('Failed to load items', err));
+    refetchLiveData();
+
+    // Keeps every device in sync: when any technician or office user changes
+    // a delivery, pickup, or review status, everyone else's app re-fetches
+    // automatically instead of showing stale data until a manual refresh.
+    const unsubscribe = subscribeToRealtimeChanges(refetchLiveData);
+    return unsubscribe;
+  }, [refetchLiveData]);
 
   const branchName = useCallback(
     (id: number) => branches.find(b => b.id === Number(id))?.name ?? '',
@@ -76,9 +95,15 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     setPickups(await fetchPickups());
   }, []);
 
-  const toggleReviewed = useCallback((key: string) => {
-    setReviewedKeys(prev => ({ ...prev, [key]: !prev[key] }));
-  }, []);
+  const toggleReviewed = useCallback(
+    async (key: string) => {
+      const { branchId, itemId } = parseReconciliationKey(key);
+      const nextReviewed = !reviewedKeys[key];
+      await setReviewed(branchId, itemId, nextReviewed);
+      setReviewedKeys(prev => ({ ...prev, [key]: nextReviewed }));
+    },
+    [reviewedKeys]
+  );
 
   // Reconciliation is derived, never stored: for each (branch, item) pair,
   // onHand = sum(delivered qty) - sum(picked-up qty), counting only entries a
