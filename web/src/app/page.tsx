@@ -1,5 +1,8 @@
 import { AgingTable } from "@/components/AgingTable";
+import { BranchLossChart } from "@/components/BranchLossChart";
 import { BranchLossTable } from "@/components/BranchLossTable";
+import { FilterBar } from "@/components/FilterBar";
+import { ItemLossChart } from "@/components/ItemLossChart";
 import { ItemLossTable } from "@/components/ItemLossTable";
 import { Section } from "@/components/Section";
 import { StatCard } from "@/components/StatCard";
@@ -10,22 +13,40 @@ import { computeMetrics } from "@/lib/metrics";
 // Server Component: fetches fresh data from Supabase on every request, so
 // the numbers here are always current — no caching or realtime needed for
 // a report someone opens to check on things, not a live operational screen.
+// The date range and branch/item drill-down all live in the URL's search
+// params, so every filtered view here is a shareable/bookmarkable link and
+// a browser back/forward step un-filters exactly like the user expects.
 export const dynamic = "force-dynamic";
 
-export default async function DashboardPage() {
-  const data = await fetchDashboardData();
+export default async function DashboardPage({
+  searchParams,
+}: {
+  searchParams: Promise<{ from?: string; to?: string; branch?: string; item?: string }>;
+}) {
+  const { from, to, branch, item } = await searchParams;
+  const selectedBranchId = branch ? Number(branch) : undefined;
+  const selectedItemId = item ? Number(item) : undefined;
+
+  const data = await fetchDashboardData({ from, to });
   const metrics = computeMetrics(data);
+
+  const drillDownLabel = selectedBranchId
+    ? data.branches.find(b => b.id === selectedBranchId)?.name
+    : selectedItemId
+      ? data.items.find(i => i.id === selectedItemId)?.name
+      : undefined;
 
   return (
     <main className="mx-auto w-full max-w-6xl px-6 py-10">
-      <header>
-        <div className="text-xs font-semibold uppercase tracking-wide text-slate-500">
-          Ancillary Reconciliation
+      <header className="flex flex-wrap items-start justify-between gap-4">
+        <div>
+          <div className="text-xs font-semibold uppercase tracking-wide text-slate-500">Ancillary Reconciliation</div>
+          <h1 className="mt-1 text-3xl font-bold text-slate-900">Executive Overview</h1>
+          <p className="mt-1 text-sm text-slate-500">
+            Equipment loss and cross-branch activity, computed live from the same data the field app uses.
+          </p>
         </div>
-        <h1 className="mt-1 text-3xl font-bold text-slate-900">Executive Overview</h1>
-        <p className="mt-1 text-sm text-slate-500">
-          Equipment loss and cross-branch activity, computed live from the same data the field app uses.
-        </p>
+        <FilterBar drillDownLabel={drillDownLabel} />
       </header>
 
       <div className="mt-6 grid grid-cols-2 gap-4 sm:grid-cols-3 lg:grid-cols-6">
@@ -37,16 +58,25 @@ export default async function DashboardPage() {
         <StatCard label="Pickups completed" value={String(data.completedPickupCount)} />
       </div>
 
+      <Section title="Loss by Branch" subtitle="Where equipment loss is concentrated — click a branch or a bar to filter the cases below.">
+        <BranchLossChart rows={metrics.byBranch} selectedBranchId={selectedBranchId} />
+        <div className="border-t border-slate-100">
+          <BranchLossTable rows={metrics.byBranch} selectedBranchId={selectedBranchId} />
+        </div>
+      </Section>
+
+      <Section
+        title="Most Frequently Lost Items"
+        subtitle="Which items disappear most often, across all branches — click an item or a bar to filter the cases below."
+      >
+        <ItemLossChart rows={metrics.byItem} selectedItemId={selectedItemId} />
+        <div className="border-t border-slate-100">
+          <ItemLossTable rows={metrics.byItem} selectedItemId={selectedItemId} />
+        </div>
+      </Section>
+
       <Section title="Open Cases — Oldest First" subtitle="What's been sitting the longest without a resolution.">
-        <AgingTable rows={metrics.aging} />
-      </Section>
-
-      <Section title="Loss by Branch" subtitle="Where equipment loss is concentrated.">
-        <BranchLossTable rows={metrics.byBranch} />
-      </Section>
-
-      <Section title="Most Frequently Lost Items" subtitle="Which items disappear most often, across all branches.">
-        <ItemLossTable rows={metrics.byItem} />
+        <AgingTable rows={metrics.aging} selectedBranchId={selectedBranchId} selectedItemId={selectedItemId} />
       </Section>
 
       <p className="mt-10 text-xs text-slate-400">
