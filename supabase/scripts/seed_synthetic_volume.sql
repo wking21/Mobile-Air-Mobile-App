@@ -11,17 +11,24 @@
 --
 -- HOW TO RUN THIS
 -- This does NOT run to completion in one click. Every time you hit Run it
--- generates ONE MONTH of data and remembers where it left off (in a tiny
--- synthetic_seed_progress table this script creates) — so building the full
--- default 36 months means clicking Run about 36 times. That's deliberate:
--- Supabase's SQL Editor sends each query through its own dashboard gateway,
--- which times out a request that runs too long regardless of how the SQL
--- itself is written — a single query generating 3 years of data at once
--- will fail with a dashboard-level "Failed to fetch" error before Postgres
--- is anywhere near done, even though the same SQL runs fine over a raw
--- database connection with no such limit. One month per click keeps each
--- run comfortably short. Each run's NOTICE output tells you how many months
--- are left; once it says done, you're finished.
+-- generates one chunk of data (days_per_run days, a knob in the DO block
+-- below) and remembers where it left off in a tiny synthetic_seed_progress
+-- table this script creates — so building the full history means clicking
+-- Run repeatedly. That's deliberate: Supabase's SQL Editor sends each query
+-- through its own dashboard gateway with a timeout independent of Postgres
+-- itself, so a query sized to generate months of data at once can die with
+-- a dashboard-level timeout before Postgres is anywhere near done, even
+-- though the identical SQL runs fine over a raw database connection.
+--
+-- If a run times out: first just try Run again once — free-tier Supabase
+-- projects auto-pause when idle, and the first query after waking can be
+-- slow enough to time out on its own even though the query is fine, so a
+-- second attempt on a now-warm project often just works. If it keeps timing
+-- out, lower days_per_run near the top of the DO block (try 3, or even 1)
+-- so each click does less work, and/or raise it once you've found a size
+-- that reliably finishes. Each run's NOTICE output tells you how much is
+-- left; once it says done, you're finished. There's no wrong value here —
+-- smaller just means more clicks.
 --
 -- HOW THE VOLUME NUMBER WAS DERIVED
 -- The schema doesn't track revenue at all (that was an explicit scope
@@ -35,19 +42,18 @@
 --                                  a rough ancillary-equipment estimate,
 --                                  used only to size this script, never
 --                                  written to the database
---   jobs_per_month  = monthly_revenue / avg_job_value  = 30,000
+--   jobs_per_day    = (monthly_revenue / avg_job_value) / 30.44
 --
--- Default total_months=36 (3 years of history) gives ~1,080,000 jobs total
+-- Default total_days=1095 (3 years of history) gives ~1,080,000 jobs total
 -- across every run, landing at roughly 2.1M combined delivery+pickup rows
 -- once you account for the small share of jobs left mid-flight (see outcome
 -- mix below) — comfortably in the "millions of rows" range the
 -- indexing/pagination work in this repo was built to handle. Change
--- total_months, monthly_revenue, or avg_job_value in the DO block below any
+-- total_days, monthly_revenue, or avg_job_value in the DO block below any
 -- time — it's read fresh from synthetic_seed_progress on every run, so a
--- change takes effect on the next click of Run without losing progress on
--- the runs already done (only total_months affects how many runs remain;
--- changing monthly_revenue/avg_job_value changes the size of runs not yet
--- done).
+-- change takes effect on the next click of Run without losing progress
+-- already made (only total_days affects how many runs remain; changing
+-- monthly_revenue/avg_job_value changes the density of days not yet done).
 --
 -- OUTCOME MIX per generated job (branch + item + qty + dates), meant to look
 -- like a real operation rather than uniform noise:
@@ -72,7 +78,7 @@
 -- deliveries + pickups (plus whatever equipment_losses that creates). That
 -- uses real storage on your project, likely more than fits a free-tier
 -- plan — worth checking your plan's storage limit against that estimate
--- before running all ~36 months.
+-- before running the full history.
 
 -- Optional: widen the dimension data so the reconciliation aggregate has a
 -- realistic number of distinct (branch, item) pairs to group by instead of
@@ -123,40 +129,43 @@ on conflict (id) do nothing;
 create table if not exists synthetic_seed_progress (
   id int primary key default 1,
   cursor_date date not null,
-  total_months int not null,
-  months_done int not null default 0,
+  total_days int not null,
+  days_done int not null default 0,
   check (id = 1)
 );
 
-insert into synthetic_seed_progress (id, cursor_date, total_months)
-select 1, (current_date - interval '36 months')::date, 36
+insert into synthetic_seed_progress (id, cursor_date, total_days)
+select 1, (current_date - interval '1095 days')::date, 1095
 where not exists (select 1 from synthetic_seed_progress where id = 1)
 on conflict (id) do nothing;
 
--- One run = one month of data. Click Run again to do the next month; the
--- NOTICE at the end says how many are left. No internal COMMIT here (that's
--- what broke under the Supabase SQL Editor the first time this script was
--- written — see git history) — each click is naturally its own top-level
--- transaction as far as the editor is concerned, which is exactly the
--- chunking this needs.
+-- One run = days_per_run days of data (default below: 7). Click Run again
+-- to do the next chunk; the NOTICE at the end says how much is left. No
+-- internal COMMIT here (that broke under the Supabase SQL Editor — see git
+-- history) — each click is naturally its own top-level transaction as far
+-- as the editor is concerned, which is exactly the chunking this needs.
 do $$
 declare
+  -- Shrink this if a run times out (try 3, or 1), raise it if runs finish
+  -- comfortably fast and you want fewer clicks.
+  days_per_run int := 7;
+
   monthly_revenue numeric := 7500000; -- midpoint of the requested $5-10M/month
   avg_job_value numeric := 250;       -- assumed blended revenue per rental job — sizing only, never written to the DB
 
   progress record;
   window_start date;
   window_end date;
-  total_days int;
+  window_days int;
   jobs_this_run bigint;
   branch_ids bigint[];
   item_ids bigint[];
 begin
   select * into progress from synthetic_seed_progress where id = 1 for update;
 
-  if progress.months_done >= progress.total_months then
-    raise notice 'Already done: % of % months generated. Nothing to do — run cleanup_synthetic_volume.sql if you want to start over.',
-      progress.months_done, progress.total_months;
+  if progress.days_done >= progress.total_days then
+    raise notice 'Already done: % of % days generated. Nothing to do — run cleanup_synthetic_volume.sql if you want to start over.',
+      progress.days_done, progress.total_days;
     return;
   end if;
 
@@ -168,12 +177,12 @@ begin
   end if;
 
   window_start := progress.cursor_date;
-  window_end := least((window_start + interval '1 month')::date, current_date);
-  total_days := greatest(window_end - window_start, 1);
-  jobs_this_run := round((monthly_revenue / avg_job_value) * (total_days / 30.44));
+  window_end := least(window_start + days_per_run, least(progress.cursor_date + (progress.total_days - progress.days_done), current_date));
+  window_days := greatest(window_end - window_start, 1);
+  jobs_this_run := round((monthly_revenue / avg_job_value) / 30.44 * window_days);
 
-  raise notice 'Generating month %/% (% to %): ~% jobs, ~% delivery+pickup rows...',
-    progress.months_done + 1, progress.total_months, window_start, window_end, jobs_this_run, jobs_this_run * 2;
+  raise notice 'Generating % of % days (% to %): ~% jobs, ~% delivery+pickup rows...',
+    progress.days_done + window_days, progress.total_days, window_start, window_end, jobs_this_run, jobs_this_run * 2;
 
   create temporary table if not exists tmp_synthetic_jobs (
     branch_id bigint,
@@ -201,7 +210,7 @@ begin
     branch_ids[1 + floor(random() * array_length(branch_ids, 1))::int],
     item_ids[1 + floor(random() * array_length(item_ids, 1))::int],
     (1 + floor(random() * 30))::int,
-    window_start + floor(random() * total_days)::int,
+    window_start + floor(random() * window_days)::int,
     null::date,
     case
       when outcome_r < 0.03 then 'not_yet_delivered'
@@ -243,15 +252,15 @@ begin
   where outcome in ('exact', 'overpickup');
 
   update synthetic_seed_progress
-    set cursor_date = window_end, months_done = months_done + 1
+    set cursor_date = window_end, days_done = days_done + window_days
     where id = 1;
 
   drop table if exists tmp_synthetic_jobs;
 
-  if window_end >= current_date or progress.months_done + 1 >= progress.total_months then
-    raise notice 'Done: % of % months generated. Run cleanup_synthetic_volume.sql whenever you want to remove this data.',
-      progress.months_done + 1, progress.total_months;
+  if progress.days_done + window_days >= progress.total_days then
+    raise notice 'Done: % of % days generated. Run cleanup_synthetic_volume.sql whenever you want to remove this data.',
+      progress.days_done + window_days, progress.total_days;
   else
-    raise notice '% of % months done — click Run again to continue.', progress.months_done + 1, progress.total_months;
+    raise notice '% of % days done — click Run again to continue.', progress.days_done + window_days, progress.total_days;
   end if;
 end $$;
