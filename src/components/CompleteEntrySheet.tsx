@@ -53,7 +53,11 @@ export function CompleteEntrySheet({ visible, entry, itemName, branchName, actio
             <>
               <Text style={styles.fieldLabel}>Confirm quantity {actionLabel === 'Pickup' ? 'picked up' : 'delivered'}</Text>
               <View style={{ marginBottom: spacing.md }}>
-                <QuantityStepper value={confirmedQty} onChange={setConfirmedQty} />
+                {/* min 0, not 1: confirming a completion can legitimately mean
+                    "nothing was actually there" (e.g. a canceled pickup) —
+                    unlike creating a new entry, which always requires at
+                    least 1 to be worth logging in the first place. */}
+                <QuantityStepper value={confirmedQty} onChange={setConfirmedQty} min={0} />
               </View>
 
               <Text style={styles.fieldLabel}>Notes (optional)</Text>
