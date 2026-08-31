@@ -7,6 +7,10 @@ redesign of an existing AppSheet app built on the same data model: branches,
 item_master, deliveries, and pickups. Data is backed by Supabase (Postgres +
 realtime), shared live across every device.
 
+This repo also contains `web/` — a separate Next.js executive dashboard
+(cross-branch loss/activity reporting) reading from the same Supabase
+project. See `web/README.md` for its own setup.
+
 ## Setup
 
 1. Create a free project at [supabase.com](https://supabase.com).
