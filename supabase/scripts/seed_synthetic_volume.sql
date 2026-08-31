@@ -62,11 +62,14 @@
 -- default 1,080,000-job run should land in the 5-10 minute range there —
 -- treat that as a rough floor, since your actual Supabase project's compute
 -- size, network, and concurrent load all affect it. It will also use real
--- storage on your project, likely more than fits a free-tier plan. Start
--- small to sanity-check before committing to the full run:
+-- storage on your project, likely more than fits a free-tier plan.
 --
---   call generate_synthetic_volume(months_of_history => 1);   -- ~30k jobs, quick
---   call generate_synthetic_volume();                          -- full 36-month run
+-- This whole thing runs as one statement (see below for why), so start
+-- small to sanity-check before committing to the full run: change
+-- months_of_history to 1 near the top of the DO block below, run once,
+-- check the results, then change it back to 36 (or whatever you want) and
+-- run the full volume. The statement_timeout override just above the DO
+-- block gives it room to run long without your SQL client cutting it off.
 
 -- Optional: widen the dimension data so the reconciliation aggregate has a
 -- realistic number of distinct (branch, item) pairs to group by instead of
@@ -109,24 +112,33 @@ insert into item_master (id, name, category, unit_cost) values
   (30, 'Water Cooler Jug Station', 'Coolers', 70)
 on conflict (id) do nothing;
 
-create or replace procedure generate_synthetic_volume(
-  months_of_history int default 36,
-  monthly_revenue numeric default 7500000,
-  avg_job_value numeric default 250,
-  batch_size int default 10000
-)
-language plpgsql
-as $$
+-- Runs as a single DO block rather than a stored procedure with periodic
+-- COMMITs: the Supabase SQL Editor (like most GUI SQL clients) runs
+-- everything you paste in as one transaction it controls, and a procedure
+-- calling COMMIT internally errors with "invalid transaction termination"
+-- in that context (COMMIT inside CALL only works when CALL itself is the
+-- top-level statement of its own transaction, e.g. a raw psql session).
+-- A DO block never commits internally, so it works the same everywhere —
+-- the tradeoff is the whole run is one long-lived transaction instead of
+-- many small committed batches, which is what the statement_timeout
+-- override below is for.
+set statement_timeout = '30min';
+
+do $$
 declare
-  jobs_per_month bigint := round(monthly_revenue / avg_job_value);
-  total_jobs bigint := jobs_per_month * months_of_history;
-  num_batches bigint := ceil(total_jobs::numeric / batch_size);
+  -- The one knob to change for a quick test: drop this to 1 for a ~30k-job
+  -- dry run, confirm it looks right, then set it back before the full run.
+  months_of_history int := 36;
+
+  monthly_revenue numeric := 7500000; -- midpoint of the requested $5-10M/month
+  avg_job_value numeric := 250;       -- assumed blended revenue per rental job — sizing only, never written to the DB
+
   start_date date := (current_date - (months_of_history || ' months')::interval)::date;
   total_days int := greatest(current_date - start_date, 1);
+  total_jobs bigint := round((monthly_revenue / avg_job_value) * months_of_history);
+
   branch_ids bigint[];
   item_ids bigint[];
-  batch_num bigint;
-  jobs_this_batch int;
 begin
   select array_agg(id) into branch_ids from branches;
   select array_agg(id) into item_ids from item_master;
@@ -135,8 +147,8 @@ begin
     raise exception 'branches and item_master must be seeded before running this script (see schema.sql)';
   end if;
 
-  raise notice 'Generating % synthetic jobs (~%-% delivery+pickup rows) across % batches of %...',
-    total_jobs, total_jobs, total_jobs * 2, num_batches, batch_size;
+  raise notice 'Generating % synthetic jobs (~% delivery+pickup rows combined) between % and %...',
+    total_jobs, total_jobs * 2, start_date, current_date;
 
   create temporary table if not exists tmp_synthetic_jobs (
     branch_id bigint,
@@ -145,81 +157,69 @@ begin
     delivered_date date,
     picked_date date,
     outcome text
-  ) on commit preserve rows;
+  );
+  truncate tmp_synthetic_jobs;
 
-  for batch_num in 1..num_batches loop
-    truncate tmp_synthetic_jobs;
-    jobs_this_batch := least(batch_size, (total_jobs - (batch_num - 1) * batch_size))::int;
+  -- outcome_r is drawn once per row by the inner subquery, then compared
+  -- against thresholds in the CASE below — random() directly inside each
+  -- WHEN would re-draw a fresh value per branch checked, skewing the
+  -- percentages documented above. (A `cross join lateral (select random())`
+  -- looks like it should also give one draw per row, but since the
+  -- subquery doesn't reference the outer row at all, Postgres's planner is
+  -- free to treat it as uncorrelated and evaluate it exactly once for the
+  -- whole query — confirmed against a real Postgres 16 instance while
+  -- writing this script. Nesting random() in the outer SELECT list over a
+  -- set-returning function, as below, is the version that's actually
+  -- evaluated per row.)
+  insert into tmp_synthetic_jobs (branch_id, item_id, qty, delivered_date, picked_date, outcome)
+  select
+    branch_ids[1 + floor(random() * array_length(branch_ids, 1))::int],
+    item_ids[1 + floor(random() * array_length(item_ids, 1))::int],
+    (1 + floor(random() * 30))::int,
+    start_date + floor(random() * total_days)::int,
+    null::date,
+    case
+      when outcome_r < 0.03 then 'not_yet_delivered'
+      when outcome_r < 0.11 then 'not_yet_picked'
+      when outcome_r < 0.21 then 'overpickup'
+      else 'exact'
+    end
+  from (select random() as outcome_r from generate_series(1, total_jobs)) g;
 
-    -- outcome_r is drawn once per row by the inner subquery, then compared
-    -- against thresholds in the CASE below — random() directly inside each
-    -- WHEN would re-draw a fresh value per branch checked, skewing the
-    -- percentages documented above. (A `cross join lateral (select random())`
-    -- looks like it should also give one draw per row, but since the
-    -- subquery doesn't reference the outer row at all, Postgres's planner is
-    -- free to treat it as uncorrelated and evaluate it exactly once for the
-    -- whole query — confirmed against a real Postgres 16 instance while
-    -- writing this script. Nesting random() in the outer SELECT list over a
-    -- set-returning function, as below, is the version that's actually
-    -- evaluated per row.)
-    insert into tmp_synthetic_jobs (branch_id, item_id, qty, delivered_date, picked_date, outcome)
-    select
-      branch_ids[1 + floor(random() * array_length(branch_ids, 1))::int],
-      item_ids[1 + floor(random() * array_length(item_ids, 1))::int],
-      (1 + floor(random() * 30))::int,
-      start_date + floor(random() * total_days)::int,
-      null::date,
-      case
-        when outcome_r < 0.03 then 'not_yet_delivered'
-        when outcome_r < 0.11 then 'not_yet_picked'
-        when outcome_r < 0.21 then 'overpickup'
-        else 'exact'
-      end
-    from (select random() as outcome_r from generate_series(1, jobs_this_batch)) g;
-
-    update tmp_synthetic_jobs
-      set picked_date = delivered_date + (1 + floor(random() * 14))::int
-      where outcome in ('exact', 'overpickup');
-
-    insert into deliveries (branch_id, item_id, qty, date, notes, status, confirmed_qty, completed_at, completion_notes)
-    select
-      branch_id,
-      item_id,
-      qty,
-      delivered_date,
-      '[synthetic-load-test]',
-      case when outcome = 'not_yet_delivered' then 'planned' else 'completed' end,
-      case when outcome = 'not_yet_delivered' then null else qty end,
-      case when outcome = 'not_yet_delivered' then null else delivered_date end,
-      null
-    from tmp_synthetic_jobs;
-
-    insert into pickups (branch_id, item_id, qty, date, notes, status, confirmed_qty, completed_at, completion_notes)
-    select
-      branch_id,
-      item_id,
-      qty,
-      picked_date,
-      '[synthetic-load-test]',
-      'completed',
-      case when outcome = 'overpickup' then qty + (1 + floor(random() * 3))::int else qty end,
-      picked_date,
-      case when outcome = 'overpickup' then 'Recorded pickup count exceeds delivered count' else null end
-    from tmp_synthetic_jobs
+  update tmp_synthetic_jobs
+    set picked_date = delivered_date + (1 + floor(random() * 14))::int
     where outcome in ('exact', 'overpickup');
 
-    commit;
+  insert into deliveries (branch_id, item_id, qty, date, notes, status, confirmed_qty, completed_at, completion_notes)
+  select
+    branch_id,
+    item_id,
+    qty,
+    delivered_date,
+    '[synthetic-load-test]',
+    case when outcome = 'not_yet_delivered' then 'planned' else 'completed' end,
+    case when outcome = 'not_yet_delivered' then null else qty end,
+    case when outcome = 'not_yet_delivered' then null else delivered_date end,
+    null
+  from tmp_synthetic_jobs;
 
-    if batch_num % 10 = 0 or batch_num = num_batches then
-      raise notice 'Batch %/% done (% jobs so far)', batch_num, num_batches, least(batch_num * batch_size, total_jobs);
-    end if;
-  end loop;
+  insert into pickups (branch_id, item_id, qty, date, notes, status, confirmed_qty, completed_at, completion_notes)
+  select
+    branch_id,
+    item_id,
+    qty,
+    picked_date,
+    '[synthetic-load-test]',
+    'completed',
+    case when outcome = 'overpickup' then qty + (1 + floor(random() * 3))::int else qty end,
+    picked_date,
+    case when outcome = 'overpickup' then 'Recorded pickup count exceeds delivered count' else null end
+  from tmp_synthetic_jobs
+  where outcome in ('exact', 'overpickup');
+
+  raise notice 'Done: inserted % deliveries and % pickups. Run cleanup_synthetic_volume.sql whenever you want to remove this data.',
+    (select count(*) from tmp_synthetic_jobs),
+    (select count(*) from tmp_synthetic_jobs where outcome in ('exact', 'overpickup'));
 
   drop table if exists tmp_synthetic_jobs;
-  commit;
-
-  raise notice 'Done. Run cleanup_synthetic_volume.sql whenever you want to remove this data.';
-end;
-$$;
-
-call generate_synthetic_volume();
+end $$;
