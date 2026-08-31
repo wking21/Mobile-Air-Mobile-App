@@ -1,15 +1,27 @@
 -- Synthetic volume generator for load-testing at ~$5-10M/month of business.
 -- Run this yourself in the Supabase SQL Editor (Claude's sandbox can't reach
 -- your project). It's for load-testing, not demo data — read the whole
--- header before running, especially the storage/runtime warning at the
--- bottom and the cleanup script alongside this one
--- (cleanup_synthetic_volume.sql).
+-- header before running, especially the runtime note below and the cleanup
+-- script alongside this one (cleanup_synthetic_volume.sql).
 --
 -- PREREQUISITES: schema.sql and migrations/003_scale_indexes_and_summary.sql
 -- must already be applied. Without those indexes, check_for_equipment_loss()
 -- (see schema.sql) runs a full table scan on every single row this script
--- inserts, and a multi-million-row run will take drastically longer or time
--- out.
+-- inserts, and this will take drastically longer or time out.
+--
+-- HOW TO RUN THIS
+-- This does NOT run to completion in one click. Every time you hit Run it
+-- generates ONE MONTH of data and remembers where it left off (in a tiny
+-- synthetic_seed_progress table this script creates) — so building the full
+-- default 36 months means clicking Run about 36 times. That's deliberate:
+-- Supabase's SQL Editor sends each query through its own dashboard gateway,
+-- which times out a request that runs too long regardless of how the SQL
+-- itself is written — a single query generating 3 years of data at once
+-- will fail with a dashboard-level "Failed to fetch" error before Postgres
+-- is anywhere near done, even though the same SQL runs fine over a raw
+-- database connection with no such limit. One month per click keeps each
+-- run comfortably short. Each run's NOTICE output tells you how many months
+-- are left; once it says done, you're finished.
 --
 -- HOW THE VOLUME NUMBER WAS DERIVED
 -- The schema doesn't track revenue at all (that was an explicit scope
@@ -24,16 +36,18 @@
 --                                  used only to size this script, never
 --                                  written to the database
 --   jobs_per_month  = monthly_revenue / avg_job_value  = 30,000
---   total_jobs      = jobs_per_month * months_of_history
 --
--- Default months_of_history=36 (3 years of history) gives ~1,080,000 jobs,
--- which lands at roughly 2.1M combined delivery+pickup rows once you account
--- for the small share of jobs left mid-flight (see outcome mix below) —
--- comfortably in the "millions of rows" range the indexing/pagination work
--- in this repo was built to handle.
---
--- Change the numbers below to match your own assumptions any time — they're
--- plain arguments to the procedure, not baked into the script.
+-- Default total_months=36 (3 years of history) gives ~1,080,000 jobs total
+-- across every run, landing at roughly 2.1M combined delivery+pickup rows
+-- once you account for the small share of jobs left mid-flight (see outcome
+-- mix below) — comfortably in the "millions of rows" range the
+-- indexing/pagination work in this repo was built to handle. Change
+-- total_months, monthly_revenue, or avg_job_value in the DO block below any
+-- time — it's read fresh from synthetic_seed_progress on every run, so a
+-- change takes effect on the next click of Run without losing progress on
+-- the runs already done (only total_months affects how many runs remain;
+-- changing monthly_revenue/avg_job_value changes the size of runs not yet
+-- done).
 --
 -- OUTCOME MIX per generated job (branch + item + qty + dates), meant to look
 -- like a real operation rather than uniform noise:
@@ -50,32 +64,22 @@
 -- IDENTIFYING / REMOVING THIS DATA LATER
 -- Every synthetic row is tagged notes = '[synthetic-load-test]' so it can be
 -- found and deleted without touching real data — see
--- cleanup_synthetic_volume.sql in this same folder.
+-- cleanup_synthetic_volume.sql in this same folder (it also drops
+-- synthetic_seed_progress).
 --
--- STORAGE AND RUNTIME WARNING
--- At the default settings this inserts on the order of 2 million rows total
--- into deliveries + pickups (plus whatever equipment_losses that creates),
--- each of which fires check_for_equipment_loss() — that's the realistic
--- behavior being tested, not a bug, but it means this is NOT instant.
--- Benchmarked against a plain local Postgres 16 with migration 003 applied:
--- ~90,000 jobs (~170,000 delivery+pickup rows) took ~28 seconds, so the
--- default 1,080,000-job run should land in the 5-10 minute range there —
--- treat that as a rough floor, since your actual Supabase project's compute
--- size, network, and concurrent load all affect it. It will also use real
--- storage on your project, likely more than fits a free-tier plan.
---
--- This whole thing runs as one statement (see below for why), so start
--- small to sanity-check before committing to the full run: change
--- months_of_history to 1 near the top of the DO block below, run once,
--- check the results, then change it back to 36 (or whatever you want) and
--- run the full volume. The statement_timeout override just above the DO
--- block gives it room to run long without your SQL client cutting it off.
+-- STORAGE WARNING
+-- The full run inserts on the order of 2 million rows total into
+-- deliveries + pickups (plus whatever equipment_losses that creates). That
+-- uses real storage on your project, likely more than fits a free-tier
+-- plan — worth checking your plan's storage limit against that estimate
+-- before running all ~36 months.
 
 -- Optional: widen the dimension data so the reconciliation aggregate has a
 -- realistic number of distinct (branch, item) pairs to group by instead of
 -- concentrating millions of rows onto the 4 demo branches / 8 demo items.
 -- Safe to skip (comment this block out) if you'd rather keep the existing
 -- dimension rows as-is; it only ever adds rows, never touches your real ones.
+-- Only needs to run once — subsequent runs of this script no-op here.
 insert into branches (id, name, region, service_manager_email) values
   (5, 'Branch 05', 'North', 'branch05.manager@example.com'),
   (6, 'Branch 06', 'South', 'branch06.manager@example.com'),
@@ -112,34 +116,50 @@ insert into item_master (id, name, category, unit_cost) values
   (30, 'Water Cooler Jug Station', 'Coolers', 70)
 on conflict (id) do nothing;
 
--- Runs as a single DO block rather than a stored procedure with periodic
--- COMMITs: the Supabase SQL Editor (like most GUI SQL clients) runs
--- everything you paste in as one transaction it controls, and a procedure
--- calling COMMIT internally errors with "invalid transaction termination"
--- in that context (COMMIT inside CALL only works when CALL itself is the
--- top-level statement of its own transaction, e.g. a raw psql session).
--- A DO block never commits internally, so it works the same everywhere —
--- the tradeoff is the whole run is one long-lived transaction instead of
--- many small committed batches, which is what the statement_timeout
--- override below is for.
-set statement_timeout = '30min';
+-- Tracks how far this generator has gotten, so each click of Run does one
+-- bounded chunk of work instead of one long-running statement. Safe to
+-- re-run this script from scratch any time — cleanup_synthetic_volume.sql
+-- drops this table along with the synthetic rows it produced.
+create table if not exists synthetic_seed_progress (
+  id int primary key default 1,
+  cursor_date date not null,
+  total_months int not null,
+  months_done int not null default 0,
+  check (id = 1)
+);
 
+insert into synthetic_seed_progress (id, cursor_date, total_months)
+select 1, (current_date - interval '36 months')::date, 36
+where not exists (select 1 from synthetic_seed_progress where id = 1)
+on conflict (id) do nothing;
+
+-- One run = one month of data. Click Run again to do the next month; the
+-- NOTICE at the end says how many are left. No internal COMMIT here (that's
+-- what broke under the Supabase SQL Editor the first time this script was
+-- written — see git history) — each click is naturally its own top-level
+-- transaction as far as the editor is concerned, which is exactly the
+-- chunking this needs.
 do $$
 declare
-  -- The one knob to change for a quick test: drop this to 1 for a ~30k-job
-  -- dry run, confirm it looks right, then set it back before the full run.
-  months_of_history int := 36;
-
   monthly_revenue numeric := 7500000; -- midpoint of the requested $5-10M/month
   avg_job_value numeric := 250;       -- assumed blended revenue per rental job — sizing only, never written to the DB
 
-  start_date date := (current_date - (months_of_history || ' months')::interval)::date;
-  total_days int := greatest(current_date - start_date, 1);
-  total_jobs bigint := round((monthly_revenue / avg_job_value) * months_of_history);
-
+  progress record;
+  window_start date;
+  window_end date;
+  total_days int;
+  jobs_this_run bigint;
   branch_ids bigint[];
   item_ids bigint[];
 begin
+  select * into progress from synthetic_seed_progress where id = 1 for update;
+
+  if progress.months_done >= progress.total_months then
+    raise notice 'Already done: % of % months generated. Nothing to do — run cleanup_synthetic_volume.sql if you want to start over.',
+      progress.months_done, progress.total_months;
+    return;
+  end if;
+
   select array_agg(id) into branch_ids from branches;
   select array_agg(id) into item_ids from item_master;
 
@@ -147,8 +167,13 @@ begin
     raise exception 'branches and item_master must be seeded before running this script (see schema.sql)';
   end if;
 
-  raise notice 'Generating % synthetic jobs (~% delivery+pickup rows combined) between % and %...',
-    total_jobs, total_jobs * 2, start_date, current_date;
+  window_start := progress.cursor_date;
+  window_end := least((window_start + interval '1 month')::date, current_date);
+  total_days := greatest(window_end - window_start, 1);
+  jobs_this_run := round((monthly_revenue / avg_job_value) * (total_days / 30.44));
+
+  raise notice 'Generating month %/% (% to %): ~% jobs, ~% delivery+pickup rows...',
+    progress.months_done + 1, progress.total_months, window_start, window_end, jobs_this_run, jobs_this_run * 2;
 
   create temporary table if not exists tmp_synthetic_jobs (
     branch_id bigint,
@@ -176,7 +201,7 @@ begin
     branch_ids[1 + floor(random() * array_length(branch_ids, 1))::int],
     item_ids[1 + floor(random() * array_length(item_ids, 1))::int],
     (1 + floor(random() * 30))::int,
-    start_date + floor(random() * total_days)::int,
+    window_start + floor(random() * total_days)::int,
     null::date,
     case
       when outcome_r < 0.03 then 'not_yet_delivered'
@@ -184,7 +209,7 @@ begin
       when outcome_r < 0.21 then 'overpickup'
       else 'exact'
     end
-  from (select random() as outcome_r from generate_series(1, total_jobs)) g;
+  from (select random() as outcome_r from generate_series(1, jobs_this_run)) g;
 
   update tmp_synthetic_jobs
     set picked_date = delivered_date + (1 + floor(random() * 14))::int
@@ -217,9 +242,16 @@ begin
   from tmp_synthetic_jobs
   where outcome in ('exact', 'overpickup');
 
-  raise notice 'Done: inserted % deliveries and % pickups. Run cleanup_synthetic_volume.sql whenever you want to remove this data.',
-    (select count(*) from tmp_synthetic_jobs),
-    (select count(*) from tmp_synthetic_jobs where outcome in ('exact', 'overpickup'));
+  update synthetic_seed_progress
+    set cursor_date = window_end, months_done = months_done + 1
+    where id = 1;
 
   drop table if exists tmp_synthetic_jobs;
+
+  if window_end >= current_date or progress.months_done + 1 >= progress.total_months then
+    raise notice 'Done: % of % months generated. Run cleanup_synthetic_volume.sql whenever you want to remove this data.',
+      progress.months_done + 1, progress.total_months;
+  else
+    raise notice '% of % months done — click Run again to continue.', progress.months_done + 1, progress.total_months;
+  end if;
 end $$;

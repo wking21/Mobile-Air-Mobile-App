@@ -5,6 +5,7 @@
 
 delete from pickups where notes = '[synthetic-load-test]';
 delete from deliveries where notes = '[synthetic-load-test]';
+drop table if exists synthetic_seed_progress;
 
 -- What this deliberately does NOT do, and why:
 --
