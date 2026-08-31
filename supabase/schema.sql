@@ -140,6 +140,70 @@ create trigger trg_pickups_check_loss
   after insert or update on pickups
   for each row execute function check_for_equipment_loss();
 
+-- Indexes for scale: the trigger above runs two filtered SUM queries on
+-- every insert/update, and the app's list screens/stats do similar filtered
+-- lookups. Partial indexes here only cover the rows each query actually
+-- filters by, so they stay small and fast even at millions of rows.
+create index if not exists idx_deliveries_branch_item_completed
+  on deliveries (branch_id, item_id)
+  where status = 'completed';
+
+create index if not exists idx_pickups_branch_item_completed
+  on pickups (branch_id, item_id)
+  where status = 'completed';
+
+create index if not exists idx_deliveries_status_planned
+  on deliveries (status)
+  where status = 'planned';
+
+create index if not exists idx_pickups_status_planned
+  on pickups (status)
+  where status = 'planned';
+
+create index if not exists idx_deliveries_date_id
+  on deliveries (date desc, id desc);
+
+create index if not exists idx_pickups_date_id
+  on pickups (date desc, id desc);
+
+create index if not exists idx_equipment_losses_branch_item_active
+  on equipment_losses (branch_id, item_id)
+  where status in ('open', 'pending_approval');
+
+create index if not exists idx_equipment_losses_created_at
+  on equipment_losses (created_at desc);
+
+-- Server-side reconciliation aggregate. Size scales with the number of
+-- distinct (branch, item) pairs that have ever had activity — NOT with
+-- transaction volume — so the app queries this instead of pulling every
+-- delivery/pickup row and summing them client-side.
+create or replace view reconciliation_summary
+  with (security_invoker = true) -- evaluate RLS as the querying role, not the view owner, so this stays correct once RLS is tightened past today's "anyone can read everything"
+as
+with delivered as (
+  select branch_id, item_id, sum(coalesce(confirmed_qty, qty)) as delivered
+  from deliveries
+  where status = 'completed'
+  group by branch_id, item_id
+),
+picked as (
+  select branch_id, item_id, sum(coalesce(confirmed_qty, qty)) as picked
+  from pickups
+  where status = 'completed'
+  group by branch_id, item_id
+)
+select
+  coalesce(d.branch_id, p.branch_id) as branch_id,
+  coalesce(d.item_id, p.item_id) as item_id,
+  coalesce(d.delivered, 0) as delivered,
+  coalesce(p.picked, 0) as picked,
+  coalesce(d.delivered, 0) - coalesce(p.picked, 0) as on_hand,
+  coalesce(rr.reviewed, false) as reviewed
+from delivered d
+full outer join picked p on p.branch_id = d.branch_id and p.item_id = d.item_id
+left join reconciliation_reviews rr
+  on rr.branch_id = coalesce(d.branch_id, p.branch_id) and rr.item_id = coalesce(d.item_id, p.item_id);
+
 -- Seed data — the same demo branches/items/deliveries/pickups the app
 -- originally shipped with as in-memory mocks, now coming from a shared
 -- database instead of a per-device array.

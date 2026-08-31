@@ -11,27 +11,25 @@ import { useAppData } from '../state/AppContext';
 import { useSheet } from '../state/SheetContext';
 
 export function HomeScreen() {
-  const { deliveries, pickups, reconciliation, lossCases, branchName, itemName } = useAppData();
+  const { openDeliveries, openPickups, recentActivity, reconciliation, lossCases, branchName, itemName } = useAppData();
   const { openDeliverSheet, openPickupSheet } = useSheet();
 
-  const openDeliveries = deliveries.filter(d => d.status === 'planned').length;
-  const openPickups = pickups.filter(p => p.status === 'planned').length;
   const pendingCount = reconciliation.filter(r => r.status === 'Pending').length;
   // Active loss cases (not yet resolved), not raw math mismatches — a
   // discrepancy that's been investigated and resolved shouldn't still read
   // as an open problem here even though the underlying numbers stay off.
   const discrepancyCount = lossCases.filter(l => l.status !== 'resolved').length;
 
-  const recentActivity = useMemo(() => {
-    const combined = [
-      ...deliveries.map(d => ({ ...d, typeLabel: 'Delivered', dotColor: colors.accent })),
-      ...pickups.map(p => ({ ...p, typeLabel: 'Picked up', dotColor: colors.good })),
-    ];
-    return combined
-      .sort((a, b) => (a.date < b.date ? 1 : -1))
-      .slice(0, 6)
-      .map(r => ({ ...r, branchName: branchName(r.branchId), itemName: itemName(r.itemId) }));
-  }, [deliveries, pickups, branchName, itemName]);
+  const activityRows = useMemo(
+    () =>
+      recentActivity.map(r => ({
+        ...r,
+        dotColor: r.typeLabel === 'Delivered' ? colors.accent : colors.good,
+        branchName: branchName(r.branchId),
+        itemName: itemName(r.itemId),
+      })),
+    [recentActivity, branchName, itemName]
+  );
 
   return (
     <View style={styles.screen}>
@@ -56,7 +54,7 @@ export function HomeScreen() {
         <Text style={styles.sectionLabel}>Recent activity</Text>
         <Card>
           <FlatList
-            data={recentActivity}
+            data={activityRows}
             keyExtractor={item => item.id}
             scrollEnabled={false}
             ItemSeparatorComponent={Divider}

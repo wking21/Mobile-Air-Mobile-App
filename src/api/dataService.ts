@@ -1,4 +1,12 @@
-import { Branch, CompleteLineItemInput, EquipmentLoss, ItemMaster, LineItem, NewLineItemInput } from '../types';
+import {
+  Branch,
+  CompleteLineItemInput,
+  EquipmentLoss,
+  ItemMaster,
+  LineItem,
+  NewLineItemInput,
+  ReconciliationRow,
+} from '../types';
 import { supabase } from './supabaseClient';
 
 // Data-access layer backed by Supabase (Postgres + realtime). This is the
@@ -55,16 +63,105 @@ export async function fetchItems(): Promise<ItemMaster[]> {
   return data.map(i => ({ id: i.id, name: i.name, category: i.category, unitCost: Number(i.unit_cost) }));
 }
 
-export async function fetchDeliveries(): Promise<LineItem[]> {
-  const { data, error } = await supabase.from('deliveries').select('*').order('date', { ascending: false });
+// Deliveries/pickups lists are paginated (see fetchDeliveriesPage/fetchPickupsPage
+// below) rather than fetched in full — at millions of rows an unbounded fetch
+// would blow past device memory and load time. These two capped fetches remain
+// only for the two call sites that genuinely need a bounded slice rather than
+// a scrollable page: the Home screen's recent-activity card and completion
+// flows that need to hand a freshly-updated single row back to a screen.
+
+export const LINE_ITEM_PAGE_SIZE = 30;
+
+export interface LineItemPage {
+  items: LineItem[];
+  hasMore: boolean;
+}
+
+async function fetchLineItemPage(table: 'deliveries' | 'pickups', page: number): Promise<LineItemPage> {
+  const from = page * LINE_ITEM_PAGE_SIZE;
+  const to = from + LINE_ITEM_PAGE_SIZE - 1;
+  const { data, error } = await supabase
+    .from(table)
+    .select('*')
+    .order('date', { ascending: false })
+    .order('id', { ascending: false })
+    .range(from, to);
+  if (error) throw error;
+  const items = (data as DbLineItem[]).map(fromDbLineItem);
+  return { items, hasMore: items.length === LINE_ITEM_PAGE_SIZE };
+}
+
+// page is 0-based. Uses idx_deliveries_date_id / idx_pickups_date_id for the
+// sort, so paging stays fast regardless of how many rows are behind it.
+export function fetchDeliveriesPage(page: number): Promise<LineItemPage> {
+  return fetchLineItemPage('deliveries', page);
+}
+
+export function fetchPickupsPage(page: number): Promise<LineItemPage> {
+  return fetchLineItemPage('pickups', page);
+}
+
+// Completed entries for one (branch, item) pair — the line-item breakdown
+// behind a single reconciliation_summary row. Bounded by definition: this is
+// every entry that ever contributed to that one branch+item's totals, not the
+// whole table, and idx_deliveries_branch_item_completed /
+// idx_pickups_branch_item_completed cover exactly this filter shape.
+async function fetchCompletedEntriesFor(
+  table: 'deliveries' | 'pickups',
+  branchId: number,
+  itemId: number
+): Promise<LineItem[]> {
+  const { data, error } = await supabase
+    .from(table)
+    .select('*')
+    .eq('branch_id', branchId)
+    .eq('item_id', itemId)
+    .eq('status', 'completed')
+    .order('date', { ascending: false })
+    .limit(200);
   if (error) throw error;
   return (data as DbLineItem[]).map(fromDbLineItem);
 }
 
-export async function fetchPickups(): Promise<LineItem[]> {
-  const { data, error } = await supabase.from('pickups').select('*').order('date', { ascending: false });
-  if (error) throw error;
-  return (data as DbLineItem[]).map(fromDbLineItem);
+export function fetchCompletedDeliveriesFor(branchId: number, itemId: number): Promise<LineItem[]> {
+  return fetchCompletedEntriesFor('deliveries', branchId, itemId);
+}
+
+export function fetchCompletedPickupsFor(branchId: number, itemId: number): Promise<LineItem[]> {
+  return fetchCompletedEntriesFor('pickups', branchId, itemId);
+}
+
+export async function fetchOpenCounts(): Promise<{ openDeliveries: number; openPickups: number }> {
+  const [d, p] = await Promise.all([
+    supabase.from('deliveries').select('*', { count: 'exact', head: true }).eq('status', 'planned'),
+    supabase.from('pickups').select('*', { count: 'exact', head: true }).eq('status', 'planned'),
+  ]);
+  if (d.error) throw d.error;
+  if (p.error) throw p.error;
+  return { openDeliveries: d.count ?? 0, openPickups: p.count ?? 0 };
+}
+
+export interface RecentActivityEntry extends LineItem {
+  typeLabel: 'Delivered' | 'Picked up';
+}
+
+// Home screen's "Recent activity" card only ever shows a handful of rows, so
+// it pulls its own small top-N slice from each table instead of deriving it
+// from whatever the Deliveries/Pickups screens happen to have paged in.
+export async function fetchRecentActivity(limit = 6): Promise<RecentActivityEntry[]> {
+  const [d, p] = await Promise.all([
+    supabase.from('deliveries').select('*').order('date', { ascending: false }).order('id', { ascending: false }).limit(limit),
+    supabase.from('pickups').select('*').order('date', { ascending: false }).order('id', { ascending: false }).limit(limit),
+  ]);
+  if (d.error) throw d.error;
+  if (p.error) throw p.error;
+  const combined: RecentActivityEntry[] = [
+    ...(d.data as DbLineItem[]).map(row => ({ ...fromDbLineItem(row), typeLabel: 'Delivered' as const })),
+    ...(p.data as DbLineItem[]).map(row => ({ ...fromDbLineItem(row), typeLabel: 'Picked up' as const })),
+  ];
+  return combined
+    .sort((a, b) => (a.date === b.date ? (a.id < b.id ? 1 : -1) : a.date < b.date ? 1 : -1))
+    .slice(0, limit);
 }
 
 export async function createDelivery(input: NewLineItemInput): Promise<LineItem> {
@@ -87,8 +184,8 @@ export async function createPickup(input: NewLineItemInput): Promise<LineItem> {
   return fromDbLineItem(data as DbLineItem);
 }
 
-async function completeEntry(table: 'deliveries' | 'pickups', input: CompleteLineItemInput): Promise<void> {
-  const { error } = await supabase
+async function completeEntry(table: 'deliveries' | 'pickups', input: CompleteLineItemInput): Promise<LineItem> {
+  const { data, error } = await supabase
     .from(table)
     .update({
       status: 'completed',
@@ -96,32 +193,49 @@ async function completeEntry(table: 'deliveries' | 'pickups', input: CompleteLin
       completion_notes: input.completionNotes,
       completed_at: todayIso(),
     })
-    .eq('id', input.id);
+    .eq('id', input.id)
+    .select()
+    .single();
   if (error) throw error;
+  return fromDbLineItem(data as DbLineItem);
 }
 
 // Marks a delivery completed once the field technician on-site confirms the
 // actual quantity delivered. Note: no email/notification integration yet —
-// deferred until that backend function is built.
-export async function completeDelivery(input: CompleteLineItemInput): Promise<void> {
-  await completeEntry('deliveries', input);
+// deferred until that backend function is built. Returns the updated row so
+// callers can patch their own local list state instead of refetching a page.
+export function completeDelivery(input: CompleteLineItemInput): Promise<LineItem> {
+  return completeEntry('deliveries', input);
 }
 
-export async function completePickup(input: CompleteLineItemInput): Promise<void> {
-  await completeEntry('pickups', input);
+export function completePickup(input: CompleteLineItemInput): Promise<LineItem> {
+  return completeEntry('pickups', input);
 }
 
-// Reconciliation review state: presence of a row means that (branch, item)
-// pair has been marked reviewed. Shared across every device via the DB
-// instead of local component state.
-export async function fetchReviewedKeys(): Promise<Record<string, boolean>> {
-  const { data, error } = await supabase.from('reconciliation_reviews').select('branch_id, item_id');
+// Reconciliation is aggregated server-side by the reconciliation_summary view
+// (see supabase/migrations/003_scale_indexes_and_summary.sql) instead of being
+// computed here from the full deliveries/pickups tables — at millions of rows,
+// shipping every raw row to the client and summing in JS doesn't scale, while
+// this view's row count only grows with the number of distinct (branch, item)
+// pairs that have ever had activity.
+export async function fetchReconciliationSummary(): Promise<ReconciliationRow[]> {
+  const { data, error } = await supabase.from('reconciliation_summary').select('*');
   if (error) throw error;
-  const map: Record<string, boolean> = {};
-  data.forEach(row => {
-    map[`${row.branch_id}-${row.item_id}`] = true;
+  return data.map(row => {
+    const isDiscrepancy = row.on_hand < 0;
+    const isReviewed = row.reviewed;
+    return {
+      key: `${row.branch_id}-${row.item_id}`,
+      branchId: row.branch_id,
+      itemId: row.item_id,
+      delivered: row.delivered,
+      picked: row.picked,
+      onHand: row.on_hand,
+      isDiscrepancy,
+      isReviewed,
+      status: isDiscrepancy ? 'Discrepancy' : isReviewed ? 'Reviewed' : 'Pending',
+    };
   });
-  return map;
 }
 
 export async function setReviewed(branchId: number, itemId: number, reviewed: boolean): Promise<void> {

@@ -1,4 +1,4 @@
-import React, { createContext, useCallback, useContext, useEffect, useMemo, useState } from 'react';
+import React, { createContext, useCallback, useContext, useEffect, useState } from 'react';
 import {
   approveLoss,
   assignLossOwner,
@@ -7,12 +7,13 @@ import {
   createDelivery,
   createPickup,
   fetchBranches,
-  fetchDeliveries,
   fetchItems,
   fetchLossCases,
-  fetchPickups,
-  fetchReviewedKeys,
+  fetchOpenCounts,
+  fetchReconciliationSummary,
+  fetchRecentActivity,
   rejectLoss,
+  RecentActivityEntry,
   setReviewed,
   subscribeToRealtimeChanges,
   submitLossResolution,
@@ -30,17 +31,23 @@ import {
 interface AppContextValue {
   branches: Branch[];
   items: ItemMaster[];
-  deliveries: LineItem[];
-  pickups: LineItem[];
+  openDeliveries: number;
+  openPickups: number;
+  recentActivity: RecentActivityEntry[];
   reconciliation: ReconciliationRow[];
-  reviewedKeys: Record<string, boolean>;
   lossCases: EquipmentLoss[];
+  // Bumped every time the shared aggregates above are refreshed (on mount, on
+  // any realtime change, and after a mutation). The Deliveries/Pickups
+  // screens — which hold their own paginated slice of the underlying tables
+  // rather than a full copy — key an effect off this to refresh just their
+  // first page instead of the app keeping a duplicate full-table cache.
+  dataVersion: number;
   branchName: (id: number) => string;
   itemName: (id: number) => string;
   addDelivery: (input: NewLineItemInput) => Promise<void>;
   addPickup: (input: NewLineItemInput) => Promise<void>;
-  completeDeliveryEntry: (input: CompleteLineItemInput) => Promise<void>;
-  completePickupEntry: (input: CompleteLineItemInput) => Promise<void>;
+  completeDeliveryEntry: (input: CompleteLineItemInput) => Promise<LineItem>;
+  completePickupEntry: (input: CompleteLineItemInput) => Promise<LineItem>;
   toggleReviewed: (key: string) => Promise<void>;
   assignLoss: (id: string, assignedTo: string) => Promise<void>;
   submitLoss: (id: string, resolutionNotes: string) => Promise<void>;
@@ -50,10 +57,6 @@ interface AppContextValue {
 
 const AppContext = createContext<AppContextValue | undefined>(undefined);
 
-export function reconciliationKey(branchId: number, itemId: number): string {
-  return `${branchId}-${itemId}`;
-}
-
 function parseReconciliationKey(key: string): { branchId: number; itemId: number } {
   const [branchId, itemId] = key.split('-').map(Number);
   return { branchId, itemId };
@@ -62,16 +65,27 @@ function parseReconciliationKey(key: string): { branchId: number; itemId: number
 export function AppProvider({ children }: { children: React.ReactNode }) {
   const [branches, setBranches] = useState<Branch[]>([]);
   const [items, setItems] = useState<ItemMaster[]>([]);
-  const [deliveries, setDeliveries] = useState<LineItem[]>([]);
-  const [pickups, setPickups] = useState<LineItem[]>([]);
-  const [reviewedKeys, setReviewedKeys] = useState<Record<string, boolean>>({});
+  const [openDeliveries, setOpenDeliveries] = useState(0);
+  const [openPickups, setOpenPickups] = useState(0);
+  const [recentActivity, setRecentActivity] = useState<RecentActivityEntry[]>([]);
+  const [reconciliation, setReconciliation] = useState<ReconciliationRow[]>([]);
   const [lossCases, setLossCases] = useState<EquipmentLoss[]>([]);
+  const [dataVersion, setDataVersion] = useState(0);
 
+  // Everything here is a small, bounded aggregate — never the full
+  // deliveries/pickups tables — so this stays cheap no matter how much
+  // transaction history piles up behind it.
   const refetchLiveData = useCallback(() => {
-    fetchDeliveries().then(setDeliveries).catch(err => console.error('Failed to load deliveries', err));
-    fetchPickups().then(setPickups).catch(err => console.error('Failed to load pickups', err));
-    fetchReviewedKeys().then(setReviewedKeys).catch(err => console.error('Failed to load reviewed status', err));
+    fetchOpenCounts()
+      .then(({ openDeliveries, openPickups }) => {
+        setOpenDeliveries(openDeliveries);
+        setOpenPickups(openPickups);
+      })
+      .catch(err => console.error('Failed to load open counts', err));
+    fetchRecentActivity().then(setRecentActivity).catch(err => console.error('Failed to load recent activity', err));
+    fetchReconciliationSummary().then(setReconciliation).catch(err => console.error('Failed to load reconciliation summary', err));
     fetchLossCases().then(setLossCases).catch(err => console.error('Failed to load loss cases', err));
+    setDataVersion(v => v + 1);
   }, []);
 
   useEffect(() => {
@@ -96,33 +110,41 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   );
 
   const addDelivery = useCallback(async (input: NewLineItemInput) => {
-    const entry = await createDelivery(input);
-    setDeliveries(prev => [entry, ...prev]);
-  }, []);
+    await createDelivery(input);
+    refetchLiveData();
+  }, [refetchLiveData]);
 
   const addPickup = useCallback(async (input: NewLineItemInput) => {
-    const entry = await createPickup(input);
-    setPickups(prev => [entry, ...prev]);
-  }, []);
+    await createPickup(input);
+    refetchLiveData();
+  }, [refetchLiveData]);
 
-  const completeDeliveryEntry = useCallback(async (input: CompleteLineItemInput) => {
-    await completeDelivery(input);
-    setDeliveries(await fetchDeliveries());
-  }, []);
+  const completeDeliveryEntry = useCallback(
+    async (input: CompleteLineItemInput) => {
+      const updated = await completeDelivery(input);
+      refetchLiveData();
+      return updated;
+    },
+    [refetchLiveData]
+  );
 
-  const completePickupEntry = useCallback(async (input: CompleteLineItemInput) => {
-    await completePickup(input);
-    setPickups(await fetchPickups());
-  }, []);
+  const completePickupEntry = useCallback(
+    async (input: CompleteLineItemInput) => {
+      const updated = await completePickup(input);
+      refetchLiveData();
+      return updated;
+    },
+    [refetchLiveData]
+  );
 
   const toggleReviewed = useCallback(
     async (key: string) => {
       const { branchId, itemId } = parseReconciliationKey(key);
-      const nextReviewed = !reviewedKeys[key];
-      await setReviewed(branchId, itemId, nextReviewed);
-      setReviewedKeys(prev => ({ ...prev, [key]: nextReviewed }));
+      const current = reconciliation.find(r => r.key === key);
+      await setReviewed(branchId, itemId, !current?.isReviewed);
+      setReconciliation(await fetchReconciliationSummary());
     },
-    [reviewedKeys]
+    [reconciliation]
   );
 
   const assignLoss = useCallback(async (id: string, assignedTo: string) => {
@@ -145,55 +167,15 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     setLossCases(await fetchLossCases());
   }, []);
 
-  // Reconciliation is derived, never stored: for each (branch, item) pair,
-  // onHand = sum(delivered qty) - sum(picked-up qty), counting only entries a
-  // technician has confirmed completed (a planned-but-unconfirmed delivery or
-  // pickup hasn't physically happened yet, so it shouldn't move the count).
-  // onHand < 0 means more was picked up than delivered (a data/process error
-  // needing investigation).
-  const reconciliation = useMemo<ReconciliationRow[]>(() => {
-    const map: Record<string, { branchId: number; itemId: number; delivered: number; picked: number }> = {};
-    deliveries
-      .filter(d => d.status === 'completed')
-      .forEach(d => {
-        const key = reconciliationKey(d.branchId, d.itemId);
-        map[key] = map[key] ?? { branchId: d.branchId, itemId: d.itemId, delivered: 0, picked: 0 };
-        map[key].delivered += Number(d.confirmedQty ?? d.qty);
-      });
-    pickups
-      .filter(p => p.status === 'completed')
-      .forEach(p => {
-        const key = reconciliationKey(p.branchId, p.itemId);
-        map[key] = map[key] ?? { branchId: p.branchId, itemId: p.itemId, delivered: 0, picked: 0 };
-        map[key].picked += Number(p.confirmedQty ?? p.qty);
-      });
-
-    return Object.entries(map).map(([key, row]) => {
-      const onHand = row.delivered - row.picked;
-      const isDiscrepancy = onHand < 0;
-      const isReviewed = !!reviewedKeys[key];
-      return {
-        key,
-        branchId: row.branchId,
-        itemId: row.itemId,
-        delivered: row.delivered,
-        picked: row.picked,
-        onHand,
-        isDiscrepancy,
-        isReviewed,
-        status: isDiscrepancy ? 'Discrepancy' : isReviewed ? 'Reviewed' : 'Pending',
-      };
-    });
-  }, [deliveries, pickups, reviewedKeys]);
-
   const value: AppContextValue = {
     branches,
     items,
-    deliveries,
-    pickups,
+    openDeliveries,
+    openPickups,
+    recentActivity,
     reconciliation,
-    reviewedKeys,
     lossCases,
+    dataVersion,
     branchName,
     itemName,
     addDelivery,

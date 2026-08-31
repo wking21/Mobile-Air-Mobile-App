@@ -1,28 +1,67 @@
-import React, { useMemo, useState } from 'react';
-import { FlatList, Pressable, StyleSheet, Text, View } from 'react-native';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import { ActivityIndicator, FlatList, Pressable, StyleSheet, Text, View } from 'react-native';
 import { Card } from '../components/Card';
 import { CompleteEntrySheet } from '../components/CompleteEntrySheet';
 import { Divider } from '../components/Divider';
 import { LineItemRow } from '../components/LineItemRow';
 import { ScreenHeader } from '../components/ScreenHeader';
+import { fetchPickupsPage } from '../api/dataService';
+import { LineItem } from '../types';
 import { colors, radii, spacing, type } from '../theme';
 import { useAppData } from '../state/AppContext';
 import { useSheet } from '../state/SheetContext';
 
 export function PickupsScreen() {
-  const { pickups, branchName, itemName, completePickupEntry } = useAppData();
+  const { branchName, itemName, completePickupEntry, dataVersion } = useAppData();
   const { openPickupSheet } = useSheet();
   const [selectedId, setSelectedId] = useState<string | null>(null);
 
+  const [entries, setEntries] = useState<LineItem[]>([]);
+  const [page, setPage] = useState(0);
+  const [hasMore, setHasMore] = useState(true);
+  const [loadingMore, setLoadingMore] = useState(false);
+
+  // Paginated rather than loaded in full — at millions of rows the app can't
+  // hold the whole pickups table in memory. Resets to page 0 whenever the
+  // shared data version bumps (a mutation from this screen or any other
+  // device), so a newly created pickup still shows up at the top.
+  useEffect(() => {
+    let cancelled = false;
+    fetchPickupsPage(0)
+      .then(({ items, hasMore }) => {
+        if (cancelled) return;
+        setEntries(items);
+        setPage(0);
+        setHasMore(hasMore);
+      })
+      .catch(err => console.error('Failed to load pickups', err));
+    return () => {
+      cancelled = true;
+    };
+  }, [dataVersion]);
+
+  const loadMore = useCallback(async () => {
+    if (loadingMore || !hasMore) return;
+    setLoadingMore(true);
+    try {
+      const nextPage = page + 1;
+      const { items, hasMore: more } = await fetchPickupsPage(nextPage);
+      setEntries(prev => [...prev, ...items]);
+      setPage(nextPage);
+      setHasMore(more);
+    } catch (err) {
+      console.error('Failed to load more pickups', err);
+    } finally {
+      setLoadingMore(false);
+    }
+  }, [page, hasMore, loadingMore]);
+
   const rows = useMemo(
-    () =>
-      [...pickups]
-        .sort((a, b) => (a.date === b.date ? (a.id < b.id ? 1 : -1) : a.date < b.date ? 1 : -1))
-        .map(p => ({ ...p, branchName: branchName(p.branchId), itemName: itemName(p.itemId) })),
-    [pickups, branchName, itemName]
+    () => entries.map(p => ({ ...p, branchName: branchName(p.branchId), itemName: itemName(p.itemId) })),
+    [entries, branchName, itemName]
   );
 
-  const selected = pickups.find(p => p.id === selectedId) ?? null;
+  const selected = entries.find(p => p.id === selectedId) ?? null;
 
   return (
     <View style={styles.screen}>
@@ -38,6 +77,9 @@ export function PickupsScreen() {
             data={rows}
             keyExtractor={item => item.id}
             ItemSeparatorComponent={Divider}
+            onEndReachedThreshold={0.4}
+            onEndReached={loadMore}
+            ListFooterComponent={loadingMore ? <ActivityIndicator style={styles.loadingMore} color={colors.accent} /> : null}
             renderItem={({ item }) => (
               <LineItemRow
                 itemName={item.itemName}
@@ -62,7 +104,8 @@ export function PickupsScreen() {
         onClose={() => setSelectedId(null)}
         onComplete={async (confirmedQty, completionNotes) => {
           if (!selected) return;
-          await completePickupEntry({ id: selected.id, confirmedQty, completionNotes });
+          const updated = await completePickupEntry({ id: selected.id, confirmedQty, completionNotes });
+          setEntries(prev => prev.map(p => (p.id === updated.id ? updated : p)));
           setSelectedId(null);
         }}
       />
@@ -81,4 +124,5 @@ const styles = StyleSheet.create({
     backgroundColor: colors.accent,
   },
   newButtonLabel: { ...type.body, fontSize: 14, color: colors.white },
+  loadingMore: { paddingVertical: spacing.md },
 });

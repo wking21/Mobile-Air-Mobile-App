@@ -1,4 +1,4 @@
-import React, { useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import { FlatList, StyleSheet, Text, View } from 'react-native';
 import { Card } from '../components/Card';
 import { Divider } from '../components/Divider';
@@ -7,9 +7,10 @@ import { ReconciliationDetailSheet } from '../components/ReconciliationDetailShe
 import { ReconciliationRow } from '../components/ReconciliationRow';
 import { ScreenHeader } from '../components/ScreenHeader';
 import { SegmentedControl } from '../components/SegmentedControl';
+import { fetchCompletedDeliveriesFor, fetchCompletedPickupsFor } from '../api/dataService';
 import { colors, spacing, type } from '../theme';
 import { useAppData } from '../state/AppContext';
-import { ReviewFilter } from '../types';
+import { LineItem, ReviewFilter } from '../types';
 
 const LOSS_STATUS_LABEL = {
   open: 'Open' as const,
@@ -21,8 +22,6 @@ export function ReviewScreen() {
   const {
     branches,
     reconciliation,
-    deliveries,
-    pickups,
     lossCases,
     branchName,
     itemName,
@@ -34,6 +33,8 @@ export function ReviewScreen() {
   } = useAppData();
   const [filter, setFilter] = useState<ReviewFilter>('All');
   const [selectedKey, setSelectedKey] = useState<string | null>(null);
+  const [selectedDeliveries, setSelectedDeliveries] = useState<LineItem[]>([]);
+  const [selectedPickups, setSelectedPickups] = useState<LineItem[]>([]);
 
   const activeLossFor = (branchId: number, itemId: number) =>
     lossCases.find(l => l.branchId === branchId && l.itemId === itemId && l.status !== 'resolved') ??
@@ -60,21 +61,29 @@ export function ReviewScreen() {
   const selectedRow = reconciliation.find(r => r.key === selectedKey) ?? null;
   const selectedLoss = selectedRow?.isDiscrepancy ? activeLossFor(selectedRow.branchId, selectedRow.itemId) : null;
 
-  const sortByDateDesc = (a: { date: string }, b: { date: string }) => (a.date < b.date ? 1 : -1);
-  const selectedDeliveries =
-    selectedRow && !selectedRow.isDiscrepancy
-      ? deliveries
-          .filter(d => d.status === 'completed' && d.branchId === selectedRow.branchId && d.itemId === selectedRow.itemId)
-          .map(d => ({ ...d, qty: d.confirmedQty ?? d.qty }))
-          .sort(sortByDateDesc)
-      : [];
-  const selectedPickups =
-    selectedRow && !selectedRow.isDiscrepancy
-      ? pickups
-          .filter(p => p.status === 'completed' && p.branchId === selectedRow.branchId && p.itemId === selectedRow.itemId)
-          .map(p => ({ ...p, qty: p.confirmedQty ?? p.qty }))
-          .sort(sortByDateDesc)
-      : [];
+  // The line-item breakdown behind one reconciliation row is fetched on
+  // demand, scoped to just that (branch, item) pair, rather than filtered out
+  // of a full local copy of deliveries/pickups — at scale this app no longer
+  // keeps either table fully in memory (see DeliveriesScreen/PickupsScreen).
+  useEffect(() => {
+    if (!selectedRow || selectedRow.isDiscrepancy) {
+      setSelectedDeliveries([]);
+      setSelectedPickups([]);
+      return;
+    }
+    let cancelled = false;
+    const { branchId, itemId } = selectedRow;
+    Promise.all([fetchCompletedDeliveriesFor(branchId, itemId), fetchCompletedPickupsFor(branchId, itemId)])
+      .then(([d, p]) => {
+        if (cancelled) return;
+        setSelectedDeliveries(d.map(entry => ({ ...entry, qty: entry.confirmedQty ?? entry.qty })));
+        setSelectedPickups(p.map(entry => ({ ...entry, qty: entry.confirmedQty ?? entry.qty })));
+      })
+      .catch(err => console.error('Failed to load reconciliation line items', err));
+    return () => {
+      cancelled = true;
+    };
+  }, [selectedRow]);
 
   return (
     <View style={styles.screen}>
