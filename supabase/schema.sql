@@ -59,6 +59,26 @@ create table if not exists reconciliation_reviews (
   primary key (branch_id, item_id)
 );
 
+-- Running delivered/picked totals per (branch, item) pair — maintained
+-- incrementally by the trigger below, never recomputed by scanning
+-- deliveries/pickups at read time. Size scales with the number of distinct
+-- pairs that have ever had activity, not with transaction volume, same as
+-- equipment_losses below. (An earlier version of this had
+-- reconciliation_summary compute these sums fresh on every read via a
+-- GROUP BY over the full deliveries/pickups tables — fine at a few hundred
+-- rows, but at hundreds of thousands of rows that scan started exceeding
+-- Supabase's statement timeout on ordinary app loads. This table is the
+-- fix: the trigger already computes these exact sums per-pair via an
+-- indexed query for the loss-detection check, so maintaining this table
+-- piggybacks on that at no extra query cost.)
+create table if not exists reconciliation_totals (
+  branch_id bigint not null references branches(id),
+  item_id bigint not null references item_master(id),
+  delivered numeric not null default 0,
+  picked numeric not null default 0,
+  primary key (branch_id, item_id)
+);
+
 -- One row per active loss investigation for a (branch, item) pair.
 -- Auto-created/kept current by the trigger below whenever completed
 -- deliveries/pickups leave that pair's on-hand count negative. Workflow:
@@ -106,6 +126,11 @@ begin
     from pickups where branch_id = v_branch_id and item_id = v_item_id and status = 'completed';
 
   v_on_hand := v_delivered - v_picked;
+
+  insert into reconciliation_totals (branch_id, item_id, delivered, picked)
+    values (v_branch_id, v_item_id, v_delivered, v_picked)
+    on conflict (branch_id, item_id) do update
+      set delivered = excluded.delivered, picked = excluded.picked;
 
   if v_on_hand < 0 then
     select id into v_existing_case from equipment_losses
@@ -173,36 +198,24 @@ create index if not exists idx_equipment_losses_branch_item_active
 create index if not exists idx_equipment_losses_created_at
   on equipment_losses (created_at desc);
 
--- Server-side reconciliation aggregate. Size scales with the number of
--- distinct (branch, item) pairs that have ever had activity — NOT with
--- transaction volume — so the app queries this instead of pulling every
--- delivery/pickup row and summing them client-side.
+-- Server-side reconciliation aggregate — now a thin join over the
+-- incrementally-maintained reconciliation_totals table (see above) instead
+-- of a GROUP BY recomputed from deliveries/pickups on every read. Size and
+-- read cost both scale with the number of distinct (branch, item) pairs
+-- that have ever had activity, not with transaction volume.
 create or replace view reconciliation_summary
   with (security_invoker = true) -- evaluate RLS as the querying role, not the view owner, so this stays correct once RLS is tightened past today's "anyone can read everything"
 as
-with delivered as (
-  select branch_id, item_id, sum(coalesce(confirmed_qty, qty)) as delivered
-  from deliveries
-  where status = 'completed'
-  group by branch_id, item_id
-),
-picked as (
-  select branch_id, item_id, sum(coalesce(confirmed_qty, qty)) as picked
-  from pickups
-  where status = 'completed'
-  group by branch_id, item_id
-)
 select
-  coalesce(d.branch_id, p.branch_id) as branch_id,
-  coalesce(d.item_id, p.item_id) as item_id,
-  coalesce(d.delivered, 0) as delivered,
-  coalesce(p.picked, 0) as picked,
-  coalesce(d.delivered, 0) - coalesce(p.picked, 0) as on_hand,
+  rt.branch_id,
+  rt.item_id,
+  rt.delivered,
+  rt.picked,
+  rt.delivered - rt.picked as on_hand,
   coalesce(rr.reviewed, false) as reviewed
-from delivered d
-full outer join picked p on p.branch_id = d.branch_id and p.item_id = d.item_id
+from reconciliation_totals rt
 left join reconciliation_reviews rr
-  on rr.branch_id = coalesce(d.branch_id, p.branch_id) and rr.item_id = coalesce(d.item_id, p.item_id);
+  on rr.branch_id = rt.branch_id and rr.item_id = rt.item_id;
 
 -- Asset-level tracking, working toward replacing Texada's ticket
 -- generation/QR workflow. Infor already generates and owns the QR
@@ -300,6 +313,7 @@ alter table item_master enable row level security;
 alter table deliveries enable row level security;
 alter table pickups enable row level security;
 alter table reconciliation_reviews enable row level security;
+alter table reconciliation_totals enable row level security;
 alter table equipment_losses enable row level security;
 alter table assets enable row level security;
 alter table delivery_assets enable row level security;
@@ -319,6 +333,9 @@ create policy "anon full access" on pickups for all using (true) with check (tru
 
 drop policy if exists "anon full access" on reconciliation_reviews;
 create policy "anon full access" on reconciliation_reviews for all using (true) with check (true);
+
+drop policy if exists "anon full access" on reconciliation_totals;
+create policy "anon full access" on reconciliation_totals for all using (true) with check (true);
 
 drop policy if exists "anon full access" on equipment_losses;
 create policy "anon full access" on equipment_losses for all using (true) with check (true);
