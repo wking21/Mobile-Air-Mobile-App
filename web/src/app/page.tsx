@@ -27,7 +27,7 @@ export default async function DashboardPage({
   const selectedBranchId = branch ? Number(branch) : undefined;
   const selectedItemId = item ? Number(item) : undefined;
 
-  const data = await fetchDashboardData({ from, to });
+  const data = await fetchDashboardData({ from, to, branchId: selectedBranchId, itemId: selectedItemId });
   const metrics = computeMetrics(data);
 
   const drillDownLabel = selectedBranchId
@@ -58,7 +58,14 @@ export default async function DashboardPage({
         <StatCard label="Pickups completed" value={String(data.completedPickupCount)} />
       </div>
 
-      <Section title="Loss by Branch" subtitle="Where equipment loss is concentrated — click a branch or a bar to filter the cases below.">
+      <Section
+        title="Loss by Branch"
+        subtitle={
+          selectedItemId
+            ? "Which branches this item has gone missing at — click a branch or a bar to scope the whole page to it."
+            : "Where equipment loss is concentrated — click a branch or a bar to scope the whole page to it."
+        }
+      >
         <BranchLossChart rows={metrics.byBranch} selectedBranchId={selectedBranchId} />
         <div className="border-t border-slate-100">
           <BranchLossTable rows={metrics.byBranch} selectedBranchId={selectedBranchId} />
@@ -67,7 +74,11 @@ export default async function DashboardPage({
 
       <Section
         title="Most Frequently Lost Items"
-        subtitle="Which items disappear most often, across all branches — click an item or a bar to filter the cases below."
+        subtitle={
+          selectedBranchId
+            ? "Which items this branch has lost most often — click an item or a bar to scope the whole page to it."
+            : "Which items disappear most often, across all branches — click an item or a bar to scope the whole page to it."
+        }
       >
         <ItemLossChart rows={metrics.byItem} selectedItemId={selectedItemId} />
         <div className="border-t border-slate-100">
@@ -76,7 +87,7 @@ export default async function DashboardPage({
       </Section>
 
       <Section title="Open Cases — Oldest First" subtitle="What's been sitting the longest without a resolution.">
-        <AgingTable rows={metrics.aging} selectedBranchId={selectedBranchId} selectedItemId={selectedItemId} />
+        <AgingTable rows={metrics.aging} />
       </Section>
 
       <p className="mt-10 text-xs text-slate-400">

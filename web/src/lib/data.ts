@@ -30,11 +30,15 @@ export interface DashboardData {
   completedPickupCount: number;
 }
 
-export interface DateRange {
+export interface DashboardFilters {
   /** ISO yyyy-mm-dd, inclusive. Omit for open-ended ("all time"). */
   from?: string;
   /** ISO yyyy-mm-dd, inclusive. Omit for open-ended ("all time"). */
   to?: string;
+  /** Drill-down: scope everything to one branch. Mutually exclusive with itemId in the UI. */
+  branchId?: number;
+  /** Drill-down: scope everything to one item. Mutually exclusive with branchId in the UI. */
+  itemId?: number;
 }
 
 // Single query pass the dashboard page renders from. Mirrors the mobile
@@ -42,29 +46,41 @@ export interface DateRange {
 // straight from Supabase server-side — no realtime subscription needed
 // for a report that's fresh on every page load.
 //
-// The date range scopes loss cases by when they were opened (created_at)
-// and completed deliveries/pickups by when the job happened (date) — the
-// same range applied to both, so every number on the page agrees.
-export async function fetchDashboardData(range: DateRange = {}): Promise<DashboardData> {
+// Filtering happens once, here, rather than being bolted onto individual
+// components downstream — every number on the page (stat cards, both
+// tables, both charts, the open-case list) is computed from this same
+// filtered dataset, so drilling into a branch or item scopes everything
+// at once instead of some pieces filtering and others not.
+export async function fetchDashboardData(filters: DashboardFilters = {}): Promise<DashboardData> {
   let lossesQuery = supabase
     .from('equipment_losses')
     .select('id, branch_id, item_id, quantity_missing, estimated_cost, status, assigned_to, created_at');
   let deliveriesQuery = supabase.from('deliveries').select('id', { count: 'exact', head: true }).eq('status', 'completed');
   let pickupsQuery = supabase.from('pickups').select('id', { count: 'exact', head: true }).eq('status', 'completed');
 
-  if (range.from) {
-    lossesQuery = lossesQuery.gte('created_at', range.from);
-    deliveriesQuery = deliveriesQuery.gte('date', range.from);
-    pickupsQuery = pickupsQuery.gte('date', range.from);
+  if (filters.from) {
+    lossesQuery = lossesQuery.gte('created_at', filters.from);
+    deliveriesQuery = deliveriesQuery.gte('date', filters.from);
+    pickupsQuery = pickupsQuery.gte('date', filters.from);
   }
-  if (range.to) {
+  if (filters.to) {
     // created_at is a timestamp; a plain date bound needs the next day to
     // be inclusive of everything that happened on `to`.
-    const toExclusive = new Date(range.to + 'T00:00:00Z');
+    const toExclusive = new Date(filters.to + 'T00:00:00Z');
     toExclusive.setUTCDate(toExclusive.getUTCDate() + 1);
     lossesQuery = lossesQuery.lt('created_at', toExclusive.toISOString());
-    deliveriesQuery = deliveriesQuery.lte('date', range.to);
-    pickupsQuery = pickupsQuery.lte('date', range.to);
+    deliveriesQuery = deliveriesQuery.lte('date', filters.to);
+    pickupsQuery = pickupsQuery.lte('date', filters.to);
+  }
+  if (filters.branchId !== undefined) {
+    lossesQuery = lossesQuery.eq('branch_id', filters.branchId);
+    deliveriesQuery = deliveriesQuery.eq('branch_id', filters.branchId);
+    pickupsQuery = pickupsQuery.eq('branch_id', filters.branchId);
+  }
+  if (filters.itemId !== undefined) {
+    lossesQuery = lossesQuery.eq('item_id', filters.itemId);
+    deliveriesQuery = deliveriesQuery.eq('item_id', filters.itemId);
+    pickupsQuery = pickupsQuery.eq('item_id', filters.itemId);
   }
 
   const [branchesRes, itemsRes, lossesRes, deliveriesRes, pickupsRes] = await Promise.all([

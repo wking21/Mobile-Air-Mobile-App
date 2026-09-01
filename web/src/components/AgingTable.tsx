@@ -1,31 +1,17 @@
 "use client";
 
-import { useMemo } from "react";
 import { AgingCase } from "@/lib/metrics";
 import { formatCurrency } from "@/lib/format";
 import { useSort } from "@/lib/useSort";
 import { SortableTh } from "./SortableTh";
 import { StatusBadge } from "./StatusBadge";
 
-export function AgingTable({
-  rows,
-  selectedBranchId,
-  selectedItemId,
-}: {
-  rows: AgingCase[];
-  selectedBranchId?: number;
-  selectedItemId?: number;
-}) {
-  const filtered = useMemo(
-    () =>
-      rows.filter(
-        r => (selectedBranchId === undefined || r.branchId === selectedBranchId) && (selectedItemId === undefined || r.itemId === selectedItemId)
-      ),
-    [rows, selectedBranchId, selectedItemId]
-  );
-
+// `rows` arrives already scoped to whatever date range / branch / item is
+// selected — see page.tsx, which fetches from Supabase with those filters
+// applied rather than filtering client-side here.
+export function AgingTable({ rows }: { rows: AgingCase[] }) {
   const { sorted, sort, toggle } = useSort(
-    filtered,
+    rows,
     {
       itemName: r => r.itemName,
       branchName: r => r.branchName,
@@ -39,9 +25,6 @@ export function AgingTable({
 
   if (rows.length === 0) {
     return <div className="p-6 text-sm text-slate-500">No open cases — nothing outstanding right now.</div>;
-  }
-  if (filtered.length === 0) {
-    return <div className="p-6 text-sm text-slate-500">No open cases match the current filter.</div>;
   }
 
   return (
