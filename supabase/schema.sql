@@ -204,6 +204,56 @@ full outer join picked p on p.branch_id = d.branch_id and p.item_id = d.item_id
 left join reconciliation_reviews rr
   on rr.branch_id = coalesce(d.branch_id, p.branch_id) and rr.item_id = coalesce(d.item_id, p.item_id);
 
+-- Phase 1 of asset-level tracking, working toward replacing Texada's
+-- ticket generation/QR workflow. Infor stays the system of record for what
+-- assets exist and which contract they're on — this table adds what
+-- neither Texada nor Infor tracks today: live location/status per
+-- individual serialized unit. Once Infor API access is confirmed, a sync
+-- job populates infor_synced_at and overwrites asset_number with the real
+-- Infor Asset Number; until then asset_number is app-generated (see the
+-- mobile app's 'TEMP-' prefix convention). manufacturer_serial is captured
+-- now so that later sync can match a placeholder asset to its real Infor
+-- record automatically. Not every catalog item needs this — item_master's
+-- new is_serialized flag is the switch, off by default.
+alter table item_master add column if not exists is_serialized boolean not null default false;
+
+create table if not exists assets (
+  id uuid primary key default gen_random_uuid(),
+  asset_number text not null unique,
+  item_id bigint not null references item_master(id),
+  manufacturer_serial text,
+  photo_url text,
+  current_branch_id bigint references branches(id),
+  status text not null default 'at_branch' check (status in ('at_branch', 'out_on_delivery', 'lost', 'retired')),
+  infor_synced_at timestamptz,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
+);
+
+create index if not exists idx_assets_item_id on assets(item_id);
+create index if not exists idx_assets_current_branch_id on assets(current_branch_id);
+
+-- Links a delivery/pickup ticket to the specific serialized asset(s) it
+-- covered. A ticket for a non-serialized item just has no rows here — qty
+-- on the delivery/pickup row is still how those are tracked.
+create table if not exists delivery_assets (
+  delivery_id uuid not null references deliveries(id) on delete cascade,
+  asset_id uuid not null references assets(id),
+  primary key (delivery_id, asset_id)
+);
+
+create table if not exists pickup_assets (
+  pickup_id uuid not null references pickups(id) on delete cascade,
+  asset_id uuid not null references assets(id),
+  primary key (pickup_id, asset_id)
+);
+
+-- A photo taken at the moment a delivery/pickup is marked complete —
+-- documents condition/what actually left or came back, and is what a
+-- generated ticket (a later phase) will embed alongside the asset list.
+alter table deliveries add column if not exists completion_photo_url text;
+alter table pickups add column if not exists completion_photo_url text;
+
 -- Seed data — the same demo branches/items/deliveries/pickups the app
 -- originally shipped with as in-memory mocks, now coming from a shared
 -- database instead of a per-device array.
@@ -254,6 +304,9 @@ alter table deliveries enable row level security;
 alter table pickups enable row level security;
 alter table reconciliation_reviews enable row level security;
 alter table equipment_losses enable row level security;
+alter table assets enable row level security;
+alter table delivery_assets enable row level security;
+alter table pickup_assets enable row level security;
 
 drop policy if exists "anon full access" on branches;
 create policy "anon full access" on branches for all using (true) with check (true);
@@ -272,6 +325,15 @@ create policy "anon full access" on reconciliation_reviews for all using (true) 
 
 drop policy if exists "anon full access" on equipment_losses;
 create policy "anon full access" on equipment_losses for all using (true) with check (true);
+
+drop policy if exists "anon full access" on assets;
+create policy "anon full access" on assets for all using (true) with check (true);
+
+drop policy if exists "anon full access" on delivery_assets;
+create policy "anon full access" on delivery_assets for all using (true) with check (true);
+
+drop policy if exists "anon full access" on pickup_assets;
+create policy "anon full access" on pickup_assets for all using (true) with check (true);
 
 -- Realtime: push live inserts/updates for these tables to subscribed clients
 -- so multiple technicians/branches see the same data without refreshing.
@@ -302,4 +364,24 @@ begin
   ) then
     alter publication supabase_realtime add table equipment_losses;
   end if;
+  if not exists (
+    select 1 from pg_publication_tables
+    where pubname = 'supabase_realtime' and tablename = 'assets'
+  ) then
+    alter publication supabase_realtime add table assets;
+  end if;
 end $$;
+
+-- Storage bucket for asset photos and delivery/pickup completion photos.
+-- Public read (so a generated ticket or the dashboard can just link to the
+-- image directly) — same permissive posture as everything else here; see
+-- the RLS TODO above.
+insert into storage.buckets (id, name, public)
+values ('asset-photos', 'asset-photos', true)
+on conflict (id) do nothing;
+
+drop policy if exists "asset-photos public read" on storage.objects;
+create policy "asset-photos public read" on storage.objects for select using (bucket_id = 'asset-photos');
+
+drop policy if exists "asset-photos anon upload" on storage.objects;
+create policy "asset-photos anon upload" on storage.objects for insert with check (bucket_id = 'asset-photos');

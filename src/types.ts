@@ -10,6 +10,7 @@ export interface ItemMaster {
   name: string;
   category: string;
   unitCost: number;
+  isSerialized: boolean; // true for items tracked as individual QR-tagged assets, not just a quantity
 }
 
 export type LineItemStatus = 'planned' | 'completed';
@@ -25,6 +26,7 @@ export interface LineItem {
   confirmedQty?: number; // actual qty the technician confirmed on completion
   completedAt?: string; // ISO yyyy-mm-dd, set when marked completed
   completionNotes?: string; // optional note captured on completion (e.g. explaining a qty mismatch)
+  completionPhotoUrl?: string; // optional photo taken at completion, documenting condition/what actually left or came back
 }
 
 export type Delivery = LineItem;
@@ -36,6 +38,7 @@ export interface CompleteLineItemInput {
   id: string;
   confirmedQty: number;
   completionNotes: string;
+  completionPhotoUrl?: string;
 }
 
 export type ReviewFilter = 'All' | 'Pending' | 'Discrepancy';
@@ -50,6 +53,33 @@ export interface ReconciliationRow {
   isDiscrepancy: boolean;
   isReviewed: boolean;
   status: 'Discrepancy' | 'Reviewed' | 'Pending';
+}
+
+export type AssetStatus = 'at_branch' | 'out_on_delivery' | 'lost' | 'retired';
+
+// One physical, individually QR-tagged unit of a serialized item master
+// entry — see supabase/migrations/004_asset_tracking.sql. assetNumber is
+// app-generated (prefixed 'TEMP-') until a future Infor sync replaces it
+// with the real Infor Asset Number; manufacturerSerial is captured up
+// front so that sync can match this asset automatically when it happens.
+export interface Asset {
+  id: string;
+  assetNumber: string;
+  itemId: number;
+  manufacturerSerial?: string;
+  photoUrl?: string;
+  currentBranchId?: number;
+  status: AssetStatus;
+  inforSyncedAt?: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface NewAssetInput {
+  itemId: number;
+  manufacturerSerial?: string;
+  photoUrl?: string;
+  currentBranchId?: number;
 }
 
 export type LossStatus = 'open' | 'pending_approval' | 'resolved';

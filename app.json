@@ -22,7 +22,14 @@
       "favicon": "./assets/favicon.png"
     },
     "plugins": [
-      "@react-native-community/datetimepicker"
+      "@react-native-community/datetimepicker",
+      [
+        "expo-image-picker",
+        {
+          "cameraPermission": "Allow Ancillary Reconciliation to use the camera to photograph equipment and asset condition.",
+          "photosPermission": "Allow Ancillary Reconciliation to access photos to attach equipment photos."
+        }
+      ]
     ]
   }
 }

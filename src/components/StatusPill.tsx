@@ -10,7 +10,11 @@ type Status =
   | 'Completed'
   | 'Open'
   | 'Pending Approval'
-  | 'Resolved';
+  | 'Resolved'
+  | 'At Branch'
+  | 'Out on Delivery'
+  | 'Lost'
+  | 'Retired';
 
 const STYLES: Record<Status, { bg: string; fg: string }> = {
   Pending: { bg: colors.warnBg, fg: colors.warn },
@@ -21,6 +25,10 @@ const STYLES: Record<Status, { bg: string; fg: string }> = {
   Open: { bg: colors.badBg, fg: colors.bad },
   'Pending Approval': { bg: colors.warnBg, fg: colors.warn },
   Resolved: { bg: colors.goodBg, fg: colors.good },
+  'At Branch': { bg: colors.goodBg, fg: colors.good },
+  'Out on Delivery': { bg: colors.warnBg, fg: colors.warn },
+  Lost: { bg: colors.badBg, fg: colors.bad },
+  Retired: { bg: colors.border, fg: colors.sub },
 };
 
 export function StatusPill({ status }: { status: Status }) {

@@ -1,9 +1,12 @@
 import {
+  Asset,
+  AssetStatus,
   Branch,
   CompleteLineItemInput,
   EquipmentLoss,
   ItemMaster,
   LineItem,
+  NewAssetInput,
   NewLineItemInput,
   ReconciliationRow,
 } from '../types';
@@ -25,6 +28,7 @@ interface DbLineItem {
   confirmed_qty: number | null;
   completed_at: string | null;
   completion_notes: string | null;
+  completion_photo_url: string | null;
 }
 
 function fromDbLineItem(row: DbLineItem): LineItem {
@@ -39,6 +43,7 @@ function fromDbLineItem(row: DbLineItem): LineItem {
     confirmedQty: row.confirmed_qty ?? undefined,
     completedAt: row.completed_at ?? undefined,
     completionNotes: row.completion_notes ?? undefined,
+    completionPhotoUrl: row.completion_photo_url ?? undefined,
   };
 }
 
@@ -60,7 +65,13 @@ export async function fetchBranches(): Promise<Branch[]> {
 export async function fetchItems(): Promise<ItemMaster[]> {
   const { data, error } = await supabase.from('item_master').select('*').order('id');
   if (error) throw error;
-  return data.map(i => ({ id: i.id, name: i.name, category: i.category, unitCost: Number(i.unit_cost) }));
+  return data.map(i => ({
+    id: i.id,
+    name: i.name,
+    category: i.category,
+    unitCost: Number(i.unit_cost),
+    isSerialized: i.is_serialized,
+  }));
 }
 
 // Deliveries/pickups lists are paginated (see fetchDeliveriesPage/fetchPickupsPage
@@ -191,6 +202,7 @@ async function completeEntry(table: 'deliveries' | 'pickups', input: CompleteLin
       status: 'completed',
       confirmed_qty: input.confirmedQty,
       completion_notes: input.completionNotes,
+      completion_photo_url: input.completionPhotoUrl ?? null,
       completed_at: todayIso(),
     })
     .eq('id', input.id)
@@ -333,6 +345,91 @@ export async function rejectLoss(id: string, rejectionNotes: string): Promise<vo
   if (error) throw error;
 }
 
+interface DbAsset {
+  id: string;
+  asset_number: string;
+  item_id: number;
+  manufacturer_serial: string | null;
+  photo_url: string | null;
+  current_branch_id: number | null;
+  status: AssetStatus;
+  infor_synced_at: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+function fromDbAsset(row: DbAsset): Asset {
+  return {
+    id: row.id,
+    assetNumber: row.asset_number,
+    itemId: row.item_id,
+    manufacturerSerial: row.manufacturer_serial ?? undefined,
+    photoUrl: row.photo_url ?? undefined,
+    currentBranchId: row.current_branch_id ?? undefined,
+    status: row.status,
+    inforSyncedAt: row.infor_synced_at ?? undefined,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  };
+}
+
+// App-generated placeholder until a future Infor sync supplies the real
+// Infor Asset Number — prefixed so it's obviously not yet Infor-verified.
+// Excludes visually ambiguous characters (0/O, 1/I) since this also has to
+// work as a human-typed fallback when a QR code can't be scanned.
+function generateAssetNumber(): string {
+  const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
+  let suffix = '';
+  for (let i = 0; i < 8; i++) suffix += chars[Math.floor(Math.random() * chars.length)];
+  return `TEMP-${suffix}`;
+}
+
+export async function fetchAssets(): Promise<Asset[]> {
+  const { data, error } = await supabase.from('assets').select('*').order('created_at', { ascending: false });
+  if (error) throw error;
+  return (data as DbAsset[]).map(fromDbAsset);
+}
+
+export async function createAsset(input: NewAssetInput): Promise<Asset> {
+  const { data, error } = await supabase
+    .from('assets')
+    .insert({
+      asset_number: generateAssetNumber(),
+      item_id: input.itemId,
+      manufacturer_serial: input.manufacturerSerial || null,
+      photo_url: input.photoUrl || null,
+      current_branch_id: input.currentBranchId ?? null,
+    })
+    .select()
+    .single();
+  if (error) throw error;
+
+  // An item with a registered asset is, by definition, now serialized —
+  // flip the flag automatically rather than requiring a separate step to
+  // mark it before the first asset can ever be registered for it.
+  const { error: itemError } = await supabase.from('item_master').update({ is_serialized: true }).eq('id', input.itemId);
+  if (itemError) throw itemError;
+
+  return fromDbAsset(data as DbAsset);
+}
+
+// Uploads a photo (a local file:// URI from expo-image-picker) to the
+// asset-photos Storage bucket (see supabase/migrations/004_asset_tracking.sql)
+// and returns its public URL. pathPrefix groups uploads (e.g. 'assets' vs
+// 'deliveries') so the bucket doesn't become one flat directory of files.
+export async function uploadPhoto(localUri: string, pathPrefix: string): Promise<string> {
+  const response = await fetch(localUri);
+  const blob = await response.blob();
+  const ext = localUri.split('.').pop()?.split('?')[0] || 'jpg';
+  const path = `${pathPrefix}/${Date.now()}-${Math.round(Math.random() * 1e6)}.${ext}`;
+  const { error } = await supabase.storage.from('asset-photos').upload(path, blob, {
+    contentType: blob.type || 'image/jpeg',
+  });
+  if (error) throw error;
+  const { data } = supabase.storage.from('asset-photos').getPublicUrl(path);
+  return data.publicUrl;
+}
+
 // One realtime channel covering everything the app needs to stay in sync
 // across devices. Callers get a single onChange callback — simplest to
 // reason about at this data volume; re-fetches the affected list rather
@@ -344,6 +441,7 @@ export function subscribeToRealtimeChanges(onChange: () => void): () => void {
     .on('postgres_changes', { event: '*', schema: 'public', table: 'pickups' }, onChange)
     .on('postgres_changes', { event: '*', schema: 'public', table: 'reconciliation_reviews' }, onChange)
     .on('postgres_changes', { event: '*', schema: 'public', table: 'equipment_losses' }, onChange)
+    .on('postgres_changes', { event: '*', schema: 'public', table: 'assets' }, onChange)
     .subscribe();
 
   return () => {

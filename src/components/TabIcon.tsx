@@ -1,7 +1,7 @@
 import React from 'react';
 import { View } from 'react-native';
 
-export type TabIconKind = 'circle' | 'triangleDown' | 'triangleUp' | 'square' | 'diamond';
+export type TabIconKind = 'circle' | 'triangleDown' | 'triangleUp' | 'square' | 'diamond' | 'ring';
 
 export function TabIcon({ kind, color }: { kind: TabIconKind; color: string }) {
   switch (kind) {
@@ -43,5 +43,7 @@ export function TabIcon({ kind, color }: { kind: TabIconKind; color: string }) {
       return (
         <View style={{ width: 9, height: 9, backgroundColor: color, borderRadius: 2, transform: [{ rotate: '45deg' }] }} />
       );
+    case 'ring':
+      return <View style={{ width: 9, height: 9, borderRadius: 5, borderWidth: 2, borderColor: color }} />;
   }
 }

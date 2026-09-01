@@ -4,8 +4,10 @@ import {
   assignLossOwner,
   completeDelivery,
   completePickup,
+  createAsset,
   createDelivery,
   createPickup,
+  fetchAssets,
   fetchBranches,
   fetchItems,
   fetchLossCases,
@@ -19,11 +21,13 @@ import {
   submitLossResolution,
 } from '../api/dataService';
 import {
+  Asset,
   Branch,
   CompleteLineItemInput,
   EquipmentLoss,
   ItemMaster,
   LineItem,
+  NewAssetInput,
   NewLineItemInput,
   ReconciliationRow,
 } from '../types';
@@ -36,6 +40,7 @@ interface AppContextValue {
   recentActivity: RecentActivityEntry[];
   reconciliation: ReconciliationRow[];
   lossCases: EquipmentLoss[];
+  assets: Asset[];
   // Bumped every time the shared aggregates above are refreshed (on mount, on
   // any realtime change, and after a mutation). The Deliveries/Pickups
   // screens — which hold their own paginated slice of the underlying tables
@@ -53,6 +58,7 @@ interface AppContextValue {
   submitLoss: (id: string, resolutionNotes: string) => Promise<void>;
   approveLossCase: (id: string, approvedBy: string) => Promise<void>;
   rejectLossCase: (id: string, rejectionNotes: string) => Promise<void>;
+  addAsset: (input: NewAssetInput) => Promise<Asset>;
 }
 
 const AppContext = createContext<AppContextValue | undefined>(undefined);
@@ -70,6 +76,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   const [recentActivity, setRecentActivity] = useState<RecentActivityEntry[]>([]);
   const [reconciliation, setReconciliation] = useState<ReconciliationRow[]>([]);
   const [lossCases, setLossCases] = useState<EquipmentLoss[]>([]);
+  const [assets, setAssets] = useState<Asset[]>([]);
   const [dataVersion, setDataVersion] = useState(0);
 
   // Everything here is a small, bounded aggregate — never the full
@@ -85,6 +92,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     fetchRecentActivity().then(setRecentActivity).catch(err => console.error('Failed to load recent activity', err));
     fetchReconciliationSummary().then(setReconciliation).catch(err => console.error('Failed to load reconciliation summary', err));
     fetchLossCases().then(setLossCases).catch(err => console.error('Failed to load loss cases', err));
+    fetchAssets().then(setAssets).catch(err => console.error('Failed to load assets', err));
     setDataVersion(v => v + 1);
   }, []);
 
@@ -167,6 +175,13 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     setLossCases(await fetchLossCases());
   }, []);
 
+  const addAsset = useCallback(async (input: NewAssetInput) => {
+    const asset = await createAsset(input);
+    setAssets(await fetchAssets());
+    setItems(await fetchItems()); // createAsset may have flipped the item's is_serialized flag
+    return asset;
+  }, []);
+
   const value: AppContextValue = {
     branches,
     items,
@@ -175,6 +190,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     recentActivity,
     reconciliation,
     lossCases,
+    assets,
     dataVersion,
     branchName,
     itemName,
@@ -187,6 +203,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     submitLoss,
     approveLossCase,
     rejectLossCase,
+    addAsset,
   };
 
   return <AppContext.Provider value={value}>{children}</AppContext.Provider>;

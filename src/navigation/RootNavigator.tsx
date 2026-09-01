@@ -3,6 +3,7 @@ import { NavigationContainer } from '@react-navigation/native';
 import React from 'react';
 import { StyleSheet, View } from 'react-native';
 import { TabIcon, TabIconKind } from '../components/TabIcon';
+import { AssetsScreen } from '../screens/AssetsScreen';
 import { DeliveriesScreen } from '../screens/DeliveriesScreen';
 import { HomeScreen } from '../screens/HomeScreen';
 import { ItemsScreen } from '../screens/ItemsScreen';
@@ -17,6 +18,7 @@ const ICONS: Record<string, TabIconKind> = {
   Deliver: 'triangleDown',
   Pickup: 'triangleUp',
   Items: 'square',
+  Assets: 'ring',
   Review: 'diamond',
 };
 
@@ -41,6 +43,7 @@ export function RootNavigator() {
         <Tab.Screen name="Deliver" component={DeliveriesScreen} />
         <Tab.Screen name="Pickup" component={PickupsScreen} />
         <Tab.Screen name="Items" component={ItemsScreen} />
+        <Tab.Screen name="Assets" component={AssetsScreen} />
         <Tab.Screen name="Review" component={ReviewScreen} />
       </Tab.Navigator>
     </NavigationContainer>

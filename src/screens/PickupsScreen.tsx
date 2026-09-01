@@ -5,7 +5,7 @@ import { CompleteEntrySheet } from '../components/CompleteEntrySheet';
 import { Divider } from '../components/Divider';
 import { LineItemRow } from '../components/LineItemRow';
 import { ScreenHeader } from '../components/ScreenHeader';
-import { fetchPickupsPage } from '../api/dataService';
+import { fetchPickupsPage, uploadPhoto } from '../api/dataService';
 import { LineItem } from '../types';
 import { colors, radii, spacing, type } from '../theme';
 import { useAppData } from '../state/AppContext';
@@ -102,9 +102,10 @@ export function PickupsScreen() {
         branchName={selected ? branchName(selected.branchId) : ''}
         actionLabel="Pickup"
         onClose={() => setSelectedId(null)}
-        onComplete={async (confirmedQty, completionNotes) => {
+        onComplete={async (confirmedQty, completionNotes, photoUri) => {
           if (!selected) return;
-          const updated = await completePickupEntry({ id: selected.id, confirmedQty, completionNotes });
+          const completionPhotoUrl = photoUri ? await uploadPhoto(photoUri, 'pickups') : undefined;
+          const updated = await completePickupEntry({ id: selected.id, confirmedQty, completionNotes, completionPhotoUrl });
           setEntries(prev => prev.map(p => (p.id === updated.id ? updated : p)));
           setSelectedId(null);
         }}

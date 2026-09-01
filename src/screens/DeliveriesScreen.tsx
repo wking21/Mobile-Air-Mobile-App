@@ -5,7 +5,7 @@ import { CompleteEntrySheet } from '../components/CompleteEntrySheet';
 import { Divider } from '../components/Divider';
 import { LineItemRow } from '../components/LineItemRow';
 import { ScreenHeader } from '../components/ScreenHeader';
-import { fetchDeliveriesPage } from '../api/dataService';
+import { fetchDeliveriesPage, uploadPhoto } from '../api/dataService';
 import { LineItem } from '../types';
 import { colors, radii, spacing, type } from '../theme';
 import { useAppData } from '../state/AppContext';
@@ -102,9 +102,10 @@ export function DeliveriesScreen() {
         branchName={selected ? branchName(selected.branchId) : ''}
         actionLabel="Delivery"
         onClose={() => setSelectedId(null)}
-        onComplete={async (confirmedQty, completionNotes) => {
+        onComplete={async (confirmedQty, completionNotes, photoUri) => {
           if (!selected) return;
-          const updated = await completeDeliveryEntry({ id: selected.id, confirmedQty, completionNotes });
+          const completionPhotoUrl = photoUri ? await uploadPhoto(photoUri, 'deliveries') : undefined;
+          const updated = await completeDeliveryEntry({ id: selected.id, confirmedQty, completionNotes, completionPhotoUrl });
           setEntries(prev => prev.map(d => (d.id === updated.id ? updated : d)));
           setSelectedId(null);
         }}
