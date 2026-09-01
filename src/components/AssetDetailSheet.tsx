@@ -1,6 +1,5 @@
 import React from 'react';
 import { Image, Modal, StyleSheet, Text, View } from 'react-native';
-import QRCode from 'react-native-qrcode-svg';
 import { colors, radii, spacing, type } from '../theme';
 import { Asset } from '../types';
 import { ActionButton } from './ActionButton';
@@ -15,6 +14,9 @@ interface Props {
   onClose: () => void;
 }
 
+// No QR code here to generate or print — Infor already owns the tag on
+// the equipment; this just shows what we know locally about that asset
+// number from having scanned it.
 export function AssetDetailSheet({ visible, asset, itemName, branchName, onClose }: Props) {
   if (!asset) return null;
 
@@ -30,21 +32,9 @@ export function AssetDetailSheet({ visible, asset, itemName, branchName, onClose
             <StatusPill status={ASSET_STATUS_LABEL[asset.status]} />
           </View>
 
-          <View style={styles.qrWrap}>
-            <QRCode value={asset.assetNumber} size={180} />
-          </View>
-          <Text style={styles.assetNumber}>{asset.assetNumber}</Text>
-          <Text style={styles.assetNumberHint}>Print and affix to the equipment — scan or read this number to identify it.</Text>
-
-          {!!asset.manufacturerSerial && (
-            <View style={styles.row}>
-              <Text style={styles.rowLabel}>Manufacturer serial</Text>
-              <Text style={styles.rowValue}>{asset.manufacturerSerial}</Text>
-            </View>
-          )}
-          <View style={styles.row}>
-            <Text style={styles.rowLabel}>Infor sync</Text>
-            <Text style={styles.rowValue}>{asset.inforSyncedAt ? 'Verified' : 'Not yet synced'}</Text>
+          <View style={styles.assetNumberBox}>
+            <Text style={styles.assetNumberLabel}>Asset number (scanned)</Text>
+            <Text style={styles.assetNumberValue}>{asset.assetNumber}</Text>
           </View>
 
           {!!asset.photoUrl && <Image source={{ uri: asset.photoUrl }} style={styles.photo} />}
@@ -70,18 +60,15 @@ const styles = StyleSheet.create({
   header: { flexDirection: 'row', alignItems: 'flex-start', marginBottom: spacing.lg },
   title: { ...type.sheetTitle, color: colors.ink },
   subtitle: { fontSize: 14, color: colors.sub, marginTop: 2 },
-  qrWrap: { alignItems: 'center', backgroundColor: colors.card, borderRadius: radii.lg, paddingVertical: spacing.lg },
-  assetNumber: { textAlign: 'center', fontSize: 16, fontWeight: '700', color: colors.ink, marginTop: spacing.md },
-  assetNumberHint: { textAlign: 'center', fontSize: 12, color: colors.sub, marginTop: 4, marginBottom: spacing.lg },
-  row: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    paddingVertical: 10,
-    borderBottomWidth: 1,
-    borderBottomColor: colors.border,
+  assetNumberBox: {
+    backgroundColor: colors.card,
+    borderRadius: radii.sm,
+    borderWidth: 1,
+    borderColor: colors.border,
+    padding: spacing.md,
   },
-  rowLabel: { fontSize: 13, color: colors.sub },
-  rowValue: { fontSize: 13, fontWeight: '600', color: colors.ink },
+  assetNumberLabel: { fontSize: 11, fontWeight: '600', color: colors.sub, textTransform: 'uppercase' },
+  assetNumberValue: { fontSize: 17, fontWeight: '700', color: colors.ink, marginTop: 2 },
   photo: { width: '100%', height: 180, borderRadius: radii.lg, marginTop: spacing.lg, backgroundColor: colors.card },
   buttonRow: { flexDirection: 'row', gap: 10, marginTop: spacing.lg },
 });

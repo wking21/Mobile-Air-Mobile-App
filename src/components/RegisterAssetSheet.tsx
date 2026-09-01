@@ -6,29 +6,29 @@ import { colors, radii, spacing, type } from '../theme';
 import { Branch, ItemMaster } from '../types';
 import { ActionButton } from './ActionButton';
 
-// The sheet only ever produces a local device photo URI — uploading it to
-// Storage and turning it into the photoUrl NewAssetInput expects is the
-// caller's job (see AssetsScreen), since that's a network operation the
-// sheet itself shouldn't need to know about.
-export interface RegisterAssetForm {
+// Confirms the details for an asset number just read off its Infor QR tag
+// (see ScanAssetSheet) — the sheet never invents an asset number itself,
+// it only asks which catalog item this scanned tag belongs to and where
+// it currently is.
+export interface ScannedAssetForm {
+  assetNumber: string;
   itemId: number;
   currentBranchId?: number;
-  manufacturerSerial?: string;
   photoUri?: string;
 }
 
 interface Props {
   visible: boolean;
+  assetNumber: string;
   branches: Branch[];
   items: ItemMaster[];
   onCancel: () => void;
-  onSave: (input: RegisterAssetForm) => Promise<void>;
+  onSave: (input: ScannedAssetForm) => Promise<void>;
 }
 
-export function RegisterAssetSheet({ visible, branches, items, onCancel, onSave }: Props) {
+export function RegisterAssetSheet({ visible, assetNumber, branches, items, onCancel, onSave }: Props) {
   const [itemId, setItemId] = useState<number>(items[0]?.id ?? 0);
   const [branchId, setBranchId] = useState<number>(branches[0]?.id ?? 0);
-  const [manufacturerSerial, setManufacturerSerial] = useState('');
   const [photoUri, setPhotoUri] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
 
@@ -36,7 +36,6 @@ export function RegisterAssetSheet({ visible, branches, items, onCancel, onSave 
     if (visible) {
       setItemId(items[0]?.id ?? 0);
       setBranchId(branches[0]?.id ?? 0);
-      setManufacturerSerial('');
       setPhotoUri(null);
       setSaving(false);
     }
@@ -57,12 +56,7 @@ export function RegisterAssetSheet({ visible, branches, items, onCancel, onSave 
   async function handleSave() {
     setSaving(true);
     try {
-      await onSave({
-        itemId,
-        currentBranchId: branchId || undefined,
-        manufacturerSerial: manufacturerSerial.trim() || undefined,
-        photoUri: photoUri ?? undefined,
-      });
+      await onSave({ assetNumber, itemId, currentBranchId: branchId || undefined, photoUri: photoUri ?? undefined });
     } finally {
       setSaving(false);
     }
@@ -72,11 +66,11 @@ export function RegisterAssetSheet({ visible, branches, items, onCancel, onSave 
     <Modal visible={visible} transparent animationType="slide" onRequestClose={onCancel}>
       <View style={styles.scrim}>
         <View style={styles.sheet}>
-          <Text style={styles.title}>Register Asset</Text>
-          <Text style={styles.subtitle}>
-            Creates a QR-taggable record for one physical unit. The asset number is a placeholder until this is
-            reconciled with Infor's real asset registry.
-          </Text>
+          <Text style={styles.title}>Confirm Scanned Asset</Text>
+          <View style={styles.assetNumberBox}>
+            <Text style={styles.assetNumberLabel}>Scanned asset number</Text>
+            <Text style={styles.assetNumberValue}>{assetNumber}</Text>
+          </View>
 
           <Text style={styles.fieldLabel}>Item</Text>
           <View style={styles.pickerWrap}>
@@ -95,15 +89,6 @@ export function RegisterAssetSheet({ visible, branches, items, onCancel, onSave 
               ))}
             </Picker>
           </View>
-
-          <Text style={styles.fieldLabel}>Manufacturer serial (optional)</Text>
-          <TextInput
-            value={manufacturerSerial}
-            onChangeText={setManufacturerSerial}
-            placeholder="e.g. printed on the equipment's own tag"
-            placeholderTextColor={colors.sub}
-            style={styles.input}
-          />
 
           <Text style={styles.fieldLabel}>Photo (optional)</Text>
           {photoUri ? (
@@ -126,7 +111,7 @@ export function RegisterAssetSheet({ visible, branches, items, onCancel, onSave 
                 <ActivityIndicator color={colors.white} />
               </View>
             ) : (
-              <ActionButton label="Register" variant="filled" onPress={handleSave} disabled={!itemId} />
+              <ActionButton label="Save" variant="filled" onPress={handleSave} disabled={!itemId} />
             )}
           </View>
         </View>
@@ -144,8 +129,17 @@ const styles = StyleSheet.create({
     padding: 18,
     paddingBottom: 32,
   },
-  title: { ...type.sheetTitle, color: colors.ink },
-  subtitle: { fontSize: 13, color: colors.sub, marginTop: 4, marginBottom: spacing.md + 2 },
+  title: { ...type.sheetTitle, color: colors.ink, marginBottom: spacing.md + 2 },
+  assetNumberBox: {
+    backgroundColor: colors.card,
+    borderRadius: radii.sm,
+    borderWidth: 1,
+    borderColor: colors.border,
+    padding: spacing.md,
+    marginBottom: spacing.md,
+  },
+  assetNumberLabel: { fontSize: 11, fontWeight: '600', color: colors.sub, textTransform: 'uppercase' },
+  assetNumberValue: { fontSize: 17, fontWeight: '700', color: colors.ink, marginTop: 2 },
   fieldLabel: { fontSize: 12, fontWeight: '600', color: colors.sub, marginBottom: 5 },
   pickerWrap: {
     borderWidth: 1,
@@ -154,16 +148,6 @@ const styles = StyleSheet.create({
     marginBottom: spacing.md,
     backgroundColor: colors.card,
     overflow: 'hidden',
-  },
-  input: {
-    borderWidth: 1,
-    borderColor: colors.border,
-    borderRadius: radii.sm,
-    padding: 10,
-    fontSize: 15,
-    marginBottom: spacing.md,
-    backgroundColor: colors.card,
-    color: colors.ink,
   },
   photoButton: {
     borderWidth: 1,

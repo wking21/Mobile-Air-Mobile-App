@@ -204,28 +204,25 @@ full outer join picked p on p.branch_id = d.branch_id and p.item_id = d.item_id
 left join reconciliation_reviews rr
   on rr.branch_id = coalesce(d.branch_id, p.branch_id) and rr.item_id = coalesce(d.item_id, p.item_id);
 
--- Phase 1 of asset-level tracking, working toward replacing Texada's
--- ticket generation/QR workflow. Infor stays the system of record for what
--- assets exist and which contract they're on — this table adds what
--- neither Texada nor Infor tracks today: live location/status per
--- individual serialized unit. Once Infor API access is confirmed, a sync
--- job populates infor_synced_at and overwrites asset_number with the real
--- Infor Asset Number; until then asset_number is app-generated (see the
--- mobile app's 'TEMP-' prefix convention). manufacturer_serial is captured
--- now so that later sync can match a placeholder asset to its real Infor
--- record automatically. Not every catalog item needs this — item_master's
--- new is_serialized flag is the switch, off by default.
+-- Asset-level tracking, working toward replacing Texada's ticket
+-- generation/QR workflow. Infor already generates and owns the QR
+-- code/Asset Number association for serialized equipment — this table
+-- never invents its own numbering or prints new QR codes. asset_number is
+-- always a real Infor Asset Number, captured by scanning the tag already
+-- on the equipment (see the mobile app's Scan Asset flow). What this table
+-- adds — the reason it exists — is current_branch_id/status: live per-asset
+-- location, which neither Texada nor Infor tracks today. Not every catalog
+-- item needs this — item_master's is_serialized flag is the switch, off by
+-- default.
 alter table item_master add column if not exists is_serialized boolean not null default false;
 
 create table if not exists assets (
   id uuid primary key default gen_random_uuid(),
   asset_number text not null unique,
   item_id bigint not null references item_master(id),
-  manufacturer_serial text,
   photo_url text,
   current_branch_id bigint references branches(id),
   status text not null default 'at_branch' check (status in ('at_branch', 'out_on_delivery', 'lost', 'retired')),
-  infor_synced_at timestamptz,
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now()
 );

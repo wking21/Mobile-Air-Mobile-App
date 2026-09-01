@@ -29,6 +29,12 @@
           "cameraPermission": "Allow Ancillary Reconciliation to use the camera to photograph equipment and asset condition.",
           "photosPermission": "Allow Ancillary Reconciliation to access photos to attach equipment photos."
         }
+      ],
+      [
+        "expo-camera",
+        {
+          "cameraPermission": "Allow Ancillary Reconciliation to use the camera to scan asset QR codes."
+        }
       ]
     ]
   }

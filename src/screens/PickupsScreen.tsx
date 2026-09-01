@@ -5,14 +5,14 @@ import { CompleteEntrySheet } from '../components/CompleteEntrySheet';
 import { Divider } from '../components/Divider';
 import { LineItemRow } from '../components/LineItemRow';
 import { ScreenHeader } from '../components/ScreenHeader';
-import { fetchPickupsPage, uploadPhoto } from '../api/dataService';
+import { fetchPickupsPage, linkAssetToPickup, uploadPhoto } from '../api/dataService';
 import { LineItem } from '../types';
 import { colors, radii, spacing, type } from '../theme';
 import { useAppData } from '../state/AppContext';
 import { useSheet } from '../state/SheetContext';
 
 export function PickupsScreen() {
-  const { branchName, itemName, completePickupEntry, dataVersion } = useAppData();
+  const { branchName, itemName, items, completePickupEntry, scanAsset, dataVersion } = useAppData();
   const { openPickupSheet } = useSheet();
   const [selectedId, setSelectedId] = useState<string | null>(null);
 
@@ -62,6 +62,7 @@ export function PickupsScreen() {
   );
 
   const selected = entries.find(p => p.id === selectedId) ?? null;
+  const selectedItemIsSerialized = selected ? (items.find(i => i.id === selected.itemId)?.isSerialized ?? false) : false;
 
   return (
     <View style={styles.screen}>
@@ -101,11 +102,24 @@ export function PickupsScreen() {
         itemName={selected ? itemName(selected.itemId) : ''}
         branchName={selected ? branchName(selected.branchId) : ''}
         actionLabel="Pickup"
+        isSerialized={selectedItemIsSerialized}
         onClose={() => setSelectedId(null)}
-        onComplete={async (confirmedQty, completionNotes, photoUri) => {
+        onComplete={async (confirmedQty, completionNotes, photoUri, scannedAssetNumber) => {
           if (!selected) return;
           const completionPhotoUrl = photoUri ? await uploadPhoto(photoUri, 'pickups') : undefined;
           const updated = await completePickupEntry({ id: selected.id, confirmedQty, completionNotes, completionPhotoUrl });
+          if (scannedAssetNumber) {
+            // A picked-up asset is back at the branch that picked it up —
+            // this is the "live inventory" update neither Texada nor
+            // Infor provides today.
+            const asset = await scanAsset({
+              assetNumber: scannedAssetNumber,
+              itemId: selected.itemId,
+              currentBranchId: selected.branchId,
+              status: 'at_branch',
+            });
+            await linkAssetToPickup(updated.id, asset.id);
+          }
           setEntries(prev => prev.map(p => (p.id === updated.id ? updated : p)));
           setSelectedId(null);
         }}

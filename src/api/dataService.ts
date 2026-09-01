@@ -6,9 +6,9 @@ import {
   EquipmentLoss,
   ItemMaster,
   LineItem,
-  NewAssetInput,
   NewLineItemInput,
   ReconciliationRow,
+  ScannedAssetInput,
 } from '../types';
 import { supabase } from './supabaseClient';
 
@@ -349,11 +349,9 @@ interface DbAsset {
   id: string;
   asset_number: string;
   item_id: number;
-  manufacturer_serial: string | null;
   photo_url: string | null;
   current_branch_id: number | null;
   status: AssetStatus;
-  infor_synced_at: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -363,25 +361,12 @@ function fromDbAsset(row: DbAsset): Asset {
     id: row.id,
     assetNumber: row.asset_number,
     itemId: row.item_id,
-    manufacturerSerial: row.manufacturer_serial ?? undefined,
     photoUrl: row.photo_url ?? undefined,
     currentBranchId: row.current_branch_id ?? undefined,
     status: row.status,
-    inforSyncedAt: row.infor_synced_at ?? undefined,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   };
-}
-
-// App-generated placeholder until a future Infor sync supplies the real
-// Infor Asset Number — prefixed so it's obviously not yet Infor-verified.
-// Excludes visually ambiguous characters (0/O, 1/I) since this also has to
-// work as a human-typed fallback when a QR code can't be scanned.
-function generateAssetNumber(): string {
-  const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
-  let suffix = '';
-  for (let i = 0; i < 8; i++) suffix += chars[Math.floor(Math.random() * chars.length)];
-  return `TEMP-${suffix}`;
 }
 
 export async function fetchAssets(): Promise<Asset[]> {
@@ -390,27 +375,49 @@ export async function fetchAssets(): Promise<Asset[]> {
   return (data as DbAsset[]).map(fromDbAsset);
 }
 
-export async function createAsset(input: NewAssetInput): Promise<Asset> {
-  const { data, error } = await supabase
-    .from('assets')
-    .insert({
-      asset_number: generateAssetNumber(),
-      item_id: input.itemId,
-      manufacturer_serial: input.manufacturerSerial || null,
-      photo_url: input.photoUrl || null,
-      current_branch_id: input.currentBranchId ?? null,
-    })
-    .select()
-    .single();
+// Scanning an asset's QR tag either creates the first local record for it
+// or updates an existing one — asset_number is unique, so this is always a
+// single upsert keyed on the scanned value, never an app-generated number.
+// photo_url is only included in the payload when a new photo was actually
+// taken this scan, so a re-scan that doesn't retake a photo never wipes an
+// existing one (Supabase's upsert only overwrites columns you pass it).
+export async function upsertScannedAsset(input: ScannedAssetInput): Promise<Asset> {
+  const payload: Record<string, unknown> = {
+    asset_number: input.assetNumber,
+    item_id: input.itemId,
+    current_branch_id: input.currentBranchId ?? null,
+    status: input.status ?? 'at_branch',
+    updated_at: new Date().toISOString(),
+  };
+  if (input.photoUrl) payload.photo_url = input.photoUrl;
+
+  const { data, error } = await supabase.from('assets').upsert(payload, { onConflict: 'asset_number' }).select().single();
   if (error) throw error;
 
-  // An item with a registered asset is, by definition, now serialized —
-  // flip the flag automatically rather than requiring a separate step to
-  // mark it before the first asset can ever be registered for it.
+  // An item with a scanned asset is, by definition, now serialized — flip
+  // the flag automatically rather than requiring a separate step first.
   const { error: itemError } = await supabase.from('item_master').update({ is_serialized: true }).eq('id', input.itemId);
   if (itemError) throw itemError;
 
   return fromDbAsset(data as DbAsset);
+}
+
+// Links a scanned asset to the delivery/pickup ticket it was scanned for.
+// Upsert-with-ignoreDuplicates rather than a plain insert so re-completing
+// after a transient error can't fail on the (delivery_id, asset_id) unique
+// pair a previous attempt already created.
+export async function linkAssetToDelivery(deliveryId: string, assetId: string): Promise<void> {
+  const { error } = await supabase
+    .from('delivery_assets')
+    .upsert({ delivery_id: deliveryId, asset_id: assetId }, { onConflict: 'delivery_id,asset_id', ignoreDuplicates: true });
+  if (error) throw error;
+}
+
+export async function linkAssetToPickup(pickupId: string, assetId: string): Promise<void> {
+  const { error } = await supabase
+    .from('pickup_assets')
+    .upsert({ pickup_id: pickupId, asset_id: assetId }, { onConflict: 'pickup_id,asset_id', ignoreDuplicates: true });
+  if (error) throw error;
 }
 
 // Uploads a photo (a local file:// URI from expo-image-picker) to the

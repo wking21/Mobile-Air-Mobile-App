@@ -4,7 +4,6 @@ import {
   assignLossOwner,
   completeDelivery,
   completePickup,
-  createAsset,
   createDelivery,
   createPickup,
   fetchAssets,
@@ -19,6 +18,7 @@ import {
   setReviewed,
   subscribeToRealtimeChanges,
   submitLossResolution,
+  upsertScannedAsset,
 } from '../api/dataService';
 import {
   Asset,
@@ -27,9 +27,9 @@ import {
   EquipmentLoss,
   ItemMaster,
   LineItem,
-  NewAssetInput,
   NewLineItemInput,
   ReconciliationRow,
+  ScannedAssetInput,
 } from '../types';
 
 interface AppContextValue {
@@ -58,7 +58,7 @@ interface AppContextValue {
   submitLoss: (id: string, resolutionNotes: string) => Promise<void>;
   approveLossCase: (id: string, approvedBy: string) => Promise<void>;
   rejectLossCase: (id: string, rejectionNotes: string) => Promise<void>;
-  addAsset: (input: NewAssetInput) => Promise<Asset>;
+  scanAsset: (input: ScannedAssetInput) => Promise<Asset>;
 }
 
 const AppContext = createContext<AppContextValue | undefined>(undefined);
@@ -175,10 +175,10 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     setLossCases(await fetchLossCases());
   }, []);
 
-  const addAsset = useCallback(async (input: NewAssetInput) => {
-    const asset = await createAsset(input);
+  const scanAsset = useCallback(async (input: ScannedAssetInput) => {
+    const asset = await upsertScannedAsset(input);
     setAssets(await fetchAssets());
-    setItems(await fetchItems()); // createAsset may have flipped the item's is_serialized flag
+    setItems(await fetchItems()); // may have flipped the item's is_serialized flag
     return asset;
   }, []);
 
@@ -203,7 +203,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     submitLoss,
     approveLossCase,
     rejectLossCase,
-    addAsset,
+    scanAsset,
   };
 
   return <AppContext.Provider value={value}>{children}</AppContext.Provider>;

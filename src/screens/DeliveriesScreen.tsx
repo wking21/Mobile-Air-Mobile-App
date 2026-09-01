@@ -5,14 +5,14 @@ import { CompleteEntrySheet } from '../components/CompleteEntrySheet';
 import { Divider } from '../components/Divider';
 import { LineItemRow } from '../components/LineItemRow';
 import { ScreenHeader } from '../components/ScreenHeader';
-import { fetchDeliveriesPage, uploadPhoto } from '../api/dataService';
+import { fetchDeliveriesPage, linkAssetToDelivery, uploadPhoto } from '../api/dataService';
 import { LineItem } from '../types';
 import { colors, radii, spacing, type } from '../theme';
 import { useAppData } from '../state/AppContext';
 import { useSheet } from '../state/SheetContext';
 
 export function DeliveriesScreen() {
-  const { branchName, itemName, completeDeliveryEntry, dataVersion } = useAppData();
+  const { branchName, itemName, items, completeDeliveryEntry, scanAsset, dataVersion } = useAppData();
   const { openDeliverSheet } = useSheet();
   const [selectedId, setSelectedId] = useState<string | null>(null);
 
@@ -62,6 +62,7 @@ export function DeliveriesScreen() {
   );
 
   const selected = entries.find(d => d.id === selectedId) ?? null;
+  const selectedItemIsSerialized = selected ? (items.find(i => i.id === selected.itemId)?.isSerialized ?? false) : false;
 
   return (
     <View style={styles.screen}>
@@ -101,11 +102,19 @@ export function DeliveriesScreen() {
         itemName={selected ? itemName(selected.itemId) : ''}
         branchName={selected ? branchName(selected.branchId) : ''}
         actionLabel="Delivery"
+        isSerialized={selectedItemIsSerialized}
         onClose={() => setSelectedId(null)}
-        onComplete={async (confirmedQty, completionNotes, photoUri) => {
+        onComplete={async (confirmedQty, completionNotes, photoUri, scannedAssetNumber) => {
           if (!selected) return;
           const completionPhotoUrl = photoUri ? await uploadPhoto(photoUri, 'deliveries') : undefined;
           const updated = await completeDeliveryEntry({ id: selected.id, confirmedQty, completionNotes, completionPhotoUrl });
+          if (scannedAssetNumber) {
+            // A delivered asset isn't sitting at any of our branches right
+            // now — currentBranchId stays unset until it's scanned again
+            // on the way back in (see PickupsScreen).
+            const asset = await scanAsset({ assetNumber: scannedAssetNumber, itemId: selected.itemId, status: 'out_on_delivery' });
+            await linkAssetToDelivery(updated.id, asset.id);
+          }
           setEntries(prev => prev.map(d => (d.id === updated.id ? updated : d)));
           setSelectedId(null);
         }}

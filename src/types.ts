@@ -58,28 +58,31 @@ export interface ReconciliationRow {
 export type AssetStatus = 'at_branch' | 'out_on_delivery' | 'lost' | 'retired';
 
 // One physical, individually QR-tagged unit of a serialized item master
-// entry — see supabase/migrations/004_asset_tracking.sql. assetNumber is
-// app-generated (prefixed 'TEMP-') until a future Infor sync replaces it
-// with the real Infor Asset Number; manufacturerSerial is captured up
-// front so that sync can match this asset automatically when it happens.
+// entry — see supabase/migrations/005_scan_based_assets.sql. assetNumber
+// is always a real Infor Asset Number, read by scanning the QR tag Infor
+// already prints and affixes to the equipment — this app never invents
+// its own numbering or generates a QR code. What this record adds is
+// current_branch_id/status: live per-asset location, which neither Texada
+// nor Infor tracks today.
 export interface Asset {
   id: string;
   assetNumber: string;
   itemId: number;
-  manufacturerSerial?: string;
   photoUrl?: string;
   currentBranchId?: number;
   status: AssetStatus;
-  inforSyncedAt?: string;
   createdAt: string;
   updatedAt: string;
 }
 
-export interface NewAssetInput {
+// Produced by scanning an asset's QR tag — assetNumber is the scanned
+// value, not something the app generates.
+export interface ScannedAssetInput {
+  assetNumber: string;
   itemId: number;
-  manufacturerSerial?: string;
   photoUrl?: string;
   currentBranchId?: number;
+  status?: AssetStatus;
 }
 
 export type LossStatus = 'open' | 'pending_approval' | 'resolved';

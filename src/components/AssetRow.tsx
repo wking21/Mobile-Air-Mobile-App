@@ -14,14 +14,13 @@ export const ASSET_STATUS_LABEL: Record<AssetStatus, 'At Branch' | 'Out on Deliv
 interface Props {
   assetNumber: string;
   itemName: string;
-  manufacturerSerial?: string;
   branchName: string;
   status: AssetStatus;
   photoUrl?: string;
   onPress: () => void;
 }
 
-export function AssetRow({ assetNumber, itemName, manufacturerSerial, branchName, status, photoUrl, onPress }: Props) {
+export function AssetRow({ assetNumber, itemName, branchName, status, photoUrl, onPress }: Props) {
   return (
     <Pressable style={styles.row} onPress={onPress}>
       {photoUrl ? (
@@ -34,7 +33,6 @@ export function AssetRow({ assetNumber, itemName, manufacturerSerial, branchName
       <View style={styles.info}>
         <Text style={styles.itemName}>{itemName}</Text>
         <Text style={styles.assetNumber}>{assetNumber}</Text>
-        {!!manufacturerSerial && <Text style={styles.serial}>S/N {manufacturerSerial}</Text>}
       </View>
       <View style={styles.meta}>
         <StatusPill status={ASSET_STATUS_LABEL[status]} />

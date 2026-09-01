@@ -5,6 +5,7 @@ import { colors, radii, spacing, type } from '../theme';
 import { LineItem } from '../types';
 import { ActionButton } from './ActionButton';
 import { QuantityStepper } from './QuantityStepper';
+import { ScanAssetSheet } from './ScanAssetSheet';
 import { StatusPill } from './StatusPill';
 
 interface Props {
@@ -13,20 +14,28 @@ interface Props {
   itemName: string;
   branchName: string;
   actionLabel: string; // "Delivery" or "Pickup"
+  // Whether this item is tracked as individual QR-tagged assets — when
+  // true, completing this entry offers an optional scan step so the
+  // specific unit involved gets linked to this ticket and its live
+  // location updated. See supabase/migrations/005_scan_based_assets.sql.
+  isSerialized: boolean;
   onClose: () => void;
-  onComplete: (confirmedQty: number, completionNotes: string, photoUri?: string) => void;
+  onComplete: (confirmedQty: number, completionNotes: string, photoUri?: string, scannedAssetNumber?: string) => void;
 }
 
-export function CompleteEntrySheet({ visible, entry, itemName, branchName, actionLabel, onClose, onComplete }: Props) {
+export function CompleteEntrySheet({ visible, entry, itemName, branchName, actionLabel, isSerialized, onClose, onComplete }: Props) {
   const [confirmedQty, setConfirmedQty] = useState(1);
   const [completionNotes, setCompletionNotes] = useState('');
   const [photoUri, setPhotoUri] = useState<string | null>(null);
+  const [scannedAssetNumber, setScannedAssetNumber] = useState<string | null>(null);
+  const [showScanner, setShowScanner] = useState(false);
 
   useEffect(() => {
     if (visible && entry) {
       setConfirmedQty(entry.confirmedQty ?? entry.qty);
       setCompletionNotes(entry.completionNotes ?? '');
       setPhotoUri(null);
+      setScannedAssetNumber(null);
     }
   }, [visible, entry]);
 
@@ -98,14 +107,43 @@ export function CompleteEntrySheet({ visible, entry, itemName, branchName, actio
                 </Pressable>
               )}
 
+              {isSerialized && (
+                <>
+                  <Text style={styles.fieldLabel}>
+                    Scan asset {actionLabel === 'Pickup' ? '(confirms which unit came back)' : '(optional)'}
+                  </Text>
+                  {scannedAssetNumber ? (
+                    <View style={styles.scannedRow}>
+                      <Text style={styles.scannedNumber}>{scannedAssetNumber}</Text>
+                      <Pressable style={styles.photoRetake} onPress={() => setShowScanner(true)}>
+                        <Text style={styles.photoRetakeLabel}>Rescan</Text>
+                      </Pressable>
+                    </View>
+                  ) : (
+                    <Pressable style={styles.photoButton} onPress={() => setShowScanner(true)}>
+                      <Text style={styles.photoButtonLabel}>Scan Asset</Text>
+                    </Pressable>
+                  )}
+                </>
+              )}
+
               <View style={styles.buttonRow}>
                 <ActionButton label="Cancel" variant="outline" onPress={onClose} />
                 <ActionButton
                   label="Mark Completed"
                   variant="filled"
-                  onPress={() => onComplete(confirmedQty, completionNotes, photoUri ?? undefined)}
+                  onPress={() => onComplete(confirmedQty, completionNotes, photoUri ?? undefined, scannedAssetNumber ?? undefined)}
                 />
               </View>
+
+              <ScanAssetSheet
+                visible={showScanner}
+                onCancel={() => setShowScanner(false)}
+                onScanned={number => {
+                  setShowScanner(false);
+                  setScannedAssetNumber(number);
+                }}
+              />
             </>
           ) : (
             <>
@@ -175,5 +213,16 @@ const styles = StyleSheet.create({
   },
   photoRetakeLabel: { fontSize: 13, fontWeight: '600', color: colors.accent },
   completedPhoto: { width: '100%', height: 180, borderRadius: radii.lg, marginTop: spacing.md, backgroundColor: colors.card },
+  scannedRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    borderWidth: 1,
+    borderColor: colors.border,
+    borderRadius: radii.sm,
+    padding: spacing.md,
+    backgroundColor: colors.card,
+  },
+  scannedNumber: { fontSize: 15, fontWeight: '700', color: colors.ink },
   buttonRow: { flexDirection: 'row', gap: 10, marginTop: spacing.lg },
 });

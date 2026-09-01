@@ -4,44 +4,41 @@ import { AssetDetailSheet } from '../components/AssetDetailSheet';
 import { AssetRow } from '../components/AssetRow';
 import { Card } from '../components/Card';
 import { Divider } from '../components/Divider';
-import { RegisterAssetForm, RegisterAssetSheet } from '../components/RegisterAssetSheet';
+import { RegisterAssetSheet, ScannedAssetForm } from '../components/RegisterAssetSheet';
+import { ScanAssetSheet } from '../components/ScanAssetSheet';
 import { ScreenHeader } from '../components/ScreenHeader';
 import { colors, radii, spacing, type } from '../theme';
 import { useAppData } from '../state/AppContext';
 import { uploadPhoto } from '../api/dataService';
 
 export function AssetsScreen() {
-  const { branches, items, assets, branchName, itemName, addAsset } = useAppData();
+  const { branches, items, assets, branchName, itemName, scanAsset } = useAppData();
   const [query, setQuery] = useState('');
-  const [showRegister, setShowRegister] = useState(false);
+  const [showScanner, setShowScanner] = useState(false);
+  const [scannedNumber, setScannedNumber] = useState<string | null>(null);
   const [selectedAssetId, setSelectedAssetId] = useState<string | null>(null);
 
   const filtered = useMemo(() => {
     const q = query.toLowerCase();
     if (!q) return assets;
-    return assets.filter(
-      a =>
-        a.assetNumber.toLowerCase().includes(q) ||
-        itemName(a.itemId).toLowerCase().includes(q) ||
-        (a.manufacturerSerial ?? '').toLowerCase().includes(q)
-    );
+    return assets.filter(a => a.assetNumber.toLowerCase().includes(q) || itemName(a.itemId).toLowerCase().includes(q));
   }, [assets, query, itemName]);
 
   const selected = assets.find(a => a.id === selectedAssetId) ?? null;
 
-  async function handleRegister(form: RegisterAssetForm) {
+  async function handleConfirm(form: ScannedAssetForm) {
     try {
       const photoUrl = form.photoUri ? await uploadPhoto(form.photoUri, 'assets') : undefined;
-      await addAsset({
+      await scanAsset({
+        assetNumber: form.assetNumber,
         itemId: form.itemId,
         currentBranchId: form.currentBranchId,
-        manufacturerSerial: form.manufacturerSerial,
         photoUrl,
       });
-      setShowRegister(false);
+      setScannedNumber(null);
     } catch (err) {
-      console.error('Failed to register asset', err);
-      Alert.alert('Could not register asset', 'Please try again.');
+      console.error('Failed to save scanned asset', err);
+      Alert.alert('Could not save asset', 'Please try again.');
     }
   }
 
@@ -53,19 +50,19 @@ export function AssetsScreen() {
           <TextInput
             value={query}
             onChangeText={setQuery}
-            placeholder="Search asset number, item, serial"
+            placeholder="Search asset number or item"
             placeholderTextColor={colors.sub}
             style={styles.search}
           />
-          <Pressable style={styles.newButton} onPress={() => setShowRegister(true)}>
-            <Text style={styles.newButtonLabel}>+ New</Text>
+          <Pressable style={styles.scanButton} onPress={() => setShowScanner(true)}>
+            <Text style={styles.scanButtonLabel}>Scan</Text>
           </Pressable>
         </View>
 
         {assets.length === 0 ? (
           <Text style={styles.emptyHint}>
-            No individually tracked assets yet. Register one to generate its QR code — any item can become
-            serialized this way.
+            No scanned assets yet. Scan an item's Infor QR tag to start tracking its live location — any item can
+            become individually tracked this way.
           </Text>
         ) : (
           <Card>
@@ -77,7 +74,6 @@ export function AssetsScreen() {
                 <AssetRow
                   assetNumber={a.assetNumber}
                   itemName={itemName(a.itemId)}
-                  manufacturerSerial={a.manufacturerSerial}
                   branchName={a.currentBranchId ? branchName(a.currentBranchId) : 'Unassigned'}
                   status={a.status}
                   photoUrl={a.photoUrl}
@@ -89,12 +85,22 @@ export function AssetsScreen() {
         )}
       </View>
 
+      <ScanAssetSheet
+        visible={showScanner}
+        onCancel={() => setShowScanner(false)}
+        onScanned={number => {
+          setShowScanner(false);
+          setScannedNumber(number);
+        }}
+      />
+
       <RegisterAssetSheet
-        visible={showRegister}
+        visible={!!scannedNumber}
+        assetNumber={scannedNumber ?? ''}
         branches={branches}
         items={items}
-        onCancel={() => setShowRegister(false)}
-        onSave={handleRegister}
+        onCancel={() => setScannedNumber(null)}
+        onSave={handleConfirm}
       />
 
       <AssetDetailSheet
@@ -123,13 +129,13 @@ const styles = StyleSheet.create({
     backgroundColor: colors.card,
     color: colors.ink,
   },
-  newButton: {
+  scanButton: {
     borderRadius: radii.md,
     paddingVertical: 9,
     paddingHorizontal: 16,
     backgroundColor: colors.accent,
     justifyContent: 'center',
   },
-  newButtonLabel: { ...type.body, fontSize: 14, color: colors.white },
+  scanButtonLabel: { ...type.body, fontSize: 14, color: colors.white },
   emptyHint: { fontSize: 14, color: colors.sub, textAlign: 'center', marginTop: spacing.xxl, paddingHorizontal: spacing.lg },
 });
