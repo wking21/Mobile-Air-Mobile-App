@@ -3,7 +3,7 @@
 import { useRouter, usePathname, useSearchParams } from "next/navigation";
 import { DateRangePicker } from "./DateRangePicker";
 
-export function FilterBar({ drillDownLabel }: { drillDownLabel?: string }) {
+export function FilterBar({ drillDownLabel, showDateRange = true }: { drillDownLabel?: string; showDateRange?: boolean }) {
   const router = useRouter();
   const pathname = usePathname();
   const searchParams = useSearchParams();
@@ -17,7 +17,7 @@ export function FilterBar({ drillDownLabel }: { drillDownLabel?: string }) {
 
   return (
     <div className="flex flex-wrap items-center gap-2">
-      <DateRangePicker />
+      {showDateRange && <DateRangePicker />}
       {drillDownLabel && (
         <button
           type="button"

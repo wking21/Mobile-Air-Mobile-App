@@ -2,10 +2,8 @@ import { AgingTable } from "@/components/AgingTable";
 import { BranchLossChart } from "@/components/BranchLossChart";
 import { BranchLossTable } from "@/components/BranchLossTable";
 import { FilterBar } from "@/components/FilterBar";
-import { InventoryTable } from "@/components/InventoryTable";
 import { ItemLossChart } from "@/components/ItemLossChart";
 import { ItemLossTable } from "@/components/ItemLossTable";
-import { OutstandingAssetsTable } from "@/components/OutstandingAssetsTable";
 import { Section } from "@/components/Section";
 import { StatCard } from "@/components/StatCard";
 import { fetchDashboardData } from "@/lib/data";
@@ -31,8 +29,6 @@ export default async function DashboardPage({
 
   const data = await fetchDashboardData({ from, to, branchId: selectedBranchId, itemId: selectedItemId });
   const metrics = computeMetrics(data);
-  const totalCurrentlyOut = data.inventory.reduce((sum, row) => sum + row.currentlyOut, 0);
-  const totalAvailable = data.inventory.reduce((sum, row) => sum + (row.availableUnits ?? 0), 0);
 
   const drillDownLabel = selectedBranchId
     ? data.branches.find(b => b.id === selectedBranchId)?.name
@@ -47,15 +43,14 @@ export default async function DashboardPage({
           <div className="text-xs font-semibold uppercase tracking-wide text-slate-500">Ancillary Reconciliation</div>
           <h1 className="mt-1 text-3xl font-bold text-slate-900">Executive Overview</h1>
           <p className="mt-1 text-sm text-slate-500">
-            Equipment loss and cross-branch activity, computed live from the same data the field app uses.
+            Equipment loss and cross-branch activity, computed live from the same data the field app uses. See the
+            Inventory tab for what&apos;s currently out and available.
           </p>
         </div>
         <FilterBar drillDownLabel={drillDownLabel} />
       </header>
 
       <div className="mt-6 grid grid-cols-2 gap-4 sm:grid-cols-3 lg:grid-cols-6">
-        <StatCard label="Units currently out" value={String(totalCurrentlyOut)} />
-        <StatCard label="Serialized units available" value={String(totalAvailable)} />
         <StatCard label="Active loss cases" value={String(metrics.activeCaseCount)} tone={metrics.activeCaseCount > 0 ? "bad" : "default"} />
         <StatCard label="Active exposure" value={formatCurrency(metrics.activeExposure)} tone={metrics.activeExposure > 0 ? "bad" : "default"} />
         <StatCard label="Resolved cases" value={String(metrics.resolvedCaseCount)} tone="good" />
@@ -63,28 +58,6 @@ export default async function DashboardPage({
         <StatCard label="Deliveries completed" value={String(data.completedDeliveryCount)} />
         <StatCard label="Pickups completed" value={String(data.completedPickupCount)} />
       </div>
-
-      <Section
-        title="Live Inventory"
-        subtitle={
-          selectedItemId || selectedBranchId
-            ? `What's out and what's available right now, scoped to ${drillDownLabel}.`
-            : "What's out and what's available right now, across every item — not a historical report like the sections below."
-        }
-      >
-        <InventoryTable rows={data.inventory} selectedItemId={selectedItemId} />
-        <div className="border-t border-slate-100 px-4 py-3 text-xs text-slate-400">
-          &quot;Available&quot; and &quot;In use (scanned)&quot; only exist for serialized/individually-tracked items — there&apos;s no
-          total-fleet-size figure for everything else, so those items only show &quot;Currently out.&quot;
-        </div>
-      </Section>
-
-      <Section
-        title="Out on Delivery — Serialized Units"
-        subtitle="Which specific unit is out and which delivery ticket it's tied to — the closest thing to a contract this app tracks until Infor contract data is connected."
-      >
-        <OutstandingAssetsTable rows={data.outstandingAssets} selectedBranchId={selectedBranchId} />
-      </Section>
 
       <Section
         title="Loss by Branch"

@@ -56,6 +56,19 @@ export interface OutstandingAssetRow {
   deliveryDate: string | null;
 }
 
+// Same figures as InventoryItemRow, rolled up by branch instead of by item.
+// Unlike the per-item view, availableUnits/inUseUnits are never null here —
+// "zero serialized units at this branch" is a real, meaningful answer for a
+// branch (there's no per-branch equivalent of "we don't track this item
+// type" the way there is per-item).
+export interface BranchInventoryRow {
+  branchId: number;
+  branchName: string;
+  currentlyOut: number;
+  availableUnits: number;
+  inUseUnits: number;
+}
+
 export interface DashboardData {
   branches: Branch[];
   items: ItemMaster[];
@@ -63,6 +76,7 @@ export interface DashboardData {
   completedDeliveryCount: number;
   completedPickupCount: number;
   inventory: InventoryItemRow[];
+  branchInventory: BranchInventoryRow[];
   outstandingAssets: OutstandingAssetRow[];
 }
 
@@ -164,8 +178,10 @@ export async function fetchDashboardData(filters: DashboardFilters = {}): Promis
   const branchName = (id: number | null) => branches.find(b => b.id === id)?.name ?? 'Unknown branch';
 
   const onHandByItem = new Map<number, number>();
+  const onHandByBranch = new Map<number, number>();
   for (const row of reconciliationRes.data) {
     onHandByItem.set(row.item_id, (onHandByItem.get(row.item_id) ?? 0) + Number(row.on_hand));
+    onHandByBranch.set(row.branch_id, (onHandByBranch.get(row.branch_id) ?? 0) + Number(row.on_hand));
   }
 
   type AssetJoinRow = {
@@ -189,16 +205,24 @@ export async function fetchDashboardData(filters: DashboardFilters = {}): Promis
 
   const availableByItem = new Map<number, number>();
   const inUseByItem = new Map<number, number>();
+  const availableByBranch = new Map<number, number>();
+  const inUseByBranch = new Map<number, number>();
   const outstandingAssets: OutstandingAssetRow[] = [];
 
   for (const row of assetsRes.data as AssetJoinRow[]) {
     if (row.status === 'at_branch') {
       if (filters.branchId !== undefined && row.current_branch_id !== filters.branchId) continue;
       availableByItem.set(row.item_id, (availableByItem.get(row.item_id) ?? 0) + 1);
+      if (row.current_branch_id !== null) {
+        availableByBranch.set(row.current_branch_id, (availableByBranch.get(row.current_branch_id) ?? 0) + 1);
+      }
     } else {
       const delivery = latestDelivery(row);
       if (filters.branchId !== undefined && delivery?.branch_id !== filters.branchId) continue;
       inUseByItem.set(row.item_id, (inUseByItem.get(row.item_id) ?? 0) + 1);
+      if (delivery) {
+        inUseByBranch.set(delivery.branch_id, (inUseByBranch.get(delivery.branch_id) ?? 0) + 1);
+      }
       outstandingAssets.push({
         assetId: row.id,
         assetNumber: row.asset_number,
@@ -227,6 +251,17 @@ export async function fetchDashboardData(filters: DashboardFilters = {}): Promis
     })
     .sort((a, b) => b.currentlyOut - a.currentlyOut);
 
+  const relevantBranchIds = new Set([...onHandByBranch.keys(), ...availableByBranch.keys(), ...inUseByBranch.keys()]);
+  const branchInventory: BranchInventoryRow[] = Array.from(relevantBranchIds)
+    .map(branchId => ({
+      branchId,
+      branchName: branchName(branchId),
+      currentlyOut: onHandByBranch.get(branchId) ?? 0,
+      availableUnits: availableByBranch.get(branchId) ?? 0,
+      inUseUnits: inUseByBranch.get(branchId) ?? 0,
+    }))
+    .sort((a, b) => b.currentlyOut - a.currentlyOut);
+
   return {
     branches,
     items,
@@ -243,6 +278,7 @@ export async function fetchDashboardData(filters: DashboardFilters = {}): Promis
     completedDeliveryCount: deliveriesRes.count ?? 0,
     completedPickupCount: pickupsRes.count ?? 0,
     inventory,
+    branchInventory,
     outstandingAssets: outstandingAssets.sort((a, b) => (a.deliveryDate ?? '').localeCompare(b.deliveryDate ?? '')),
   };
 }

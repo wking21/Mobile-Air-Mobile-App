@@ -1,4 +1,5 @@
 import type { Metadata } from "next";
+import { NavTabs } from "@/components/NavTabs";
 import "./globals.css";
 
 export const metadata: Metadata = {
@@ -9,7 +10,10 @@ export const metadata: Metadata = {
 export default function RootLayout({ children }: LayoutProps<"/">) {
   return (
     <html lang="en" className="h-full antialiased">
-      <body className="min-h-full flex flex-col font-sans bg-slate-50 text-slate-900">{children}</body>
+      <body className="min-h-full flex flex-col font-sans bg-slate-50 text-slate-900">
+        <NavTabs />
+        {children}
+      </body>
     </html>
   );
 }
