@@ -9,6 +9,7 @@ import { StatCard } from "@/components/StatCard";
 import { fetchDashboardData } from "@/lib/data";
 import { formatCurrency } from "@/lib/format";
 import { computeMetrics } from "@/lib/metrics";
+import { createClient } from "@/lib/supabase/server";
 
 // Server Component: fetches fresh data from Supabase on every request, so
 // the numbers here are always current — no caching or realtime needed for
@@ -27,7 +28,8 @@ export default async function DashboardPage({
   const selectedBranchId = branch ? Number(branch) : undefined;
   const selectedItemId = item ? Number(item) : undefined;
 
-  const data = await fetchDashboardData({ from, to, branchId: selectedBranchId, itemId: selectedItemId });
+  const supabase = await createClient();
+  const data = await fetchDashboardData(supabase, { from, to, branchId: selectedBranchId, itemId: selectedItemId });
   const metrics = computeMetrics(data);
 
   const drillDownLabel = selectedBranchId

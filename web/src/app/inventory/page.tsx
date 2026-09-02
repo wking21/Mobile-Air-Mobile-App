@@ -5,6 +5,7 @@ import { OutstandingAssetsTable } from "@/components/OutstandingAssetsTable";
 import { Section } from "@/components/Section";
 import { StatCard } from "@/components/StatCard";
 import { fetchDashboardData } from "@/lib/data";
+import { createClient } from "@/lib/supabase/server";
 
 // Server Component, fresh on every request — same reasoning as the
 // Overview page. No date-range filter here: inventory is a snapshot of
@@ -21,7 +22,8 @@ export default async function InventoryPage({
   const selectedBranchId = branch ? Number(branch) : undefined;
   const selectedItemId = item ? Number(item) : undefined;
 
-  const data = await fetchDashboardData({ branchId: selectedBranchId, itemId: selectedItemId });
+  const supabase = await createClient();
+  const data = await fetchDashboardData(supabase, { branchId: selectedBranchId, itemId: selectedItemId });
   const totalCurrentlyOut = data.inventory.reduce((sum, row) => sum + row.currentlyOut, 0);
   const totalAvailable = data.inventory.reduce((sum, row) => sum + (row.availableUnits ?? 0), 0);
 

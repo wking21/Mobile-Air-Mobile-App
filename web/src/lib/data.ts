@@ -1,4 +1,4 @@
-import { supabase } from './supabaseClient';
+import type { SupabaseClient } from '@supabase/supabase-js';
 
 export interface Branch {
   id: number;
@@ -96,12 +96,19 @@ export interface DashboardFilters {
 // straight from Supabase server-side — no realtime subscription needed
 // for a report that's fresh on every page load.
 //
+// Takes the caller's own per-request Supabase client (see
+// lib/supabase/server.ts) rather than importing a shared one — every page
+// creates that client bound to its own request's session cookie, so
+// queries here run AS that signed-in user and RLS (role/branch scoping,
+// see supabase/migrations/008_role_based_access.sql) applies exactly the
+// way it does on the mobile app.
+//
 // Filtering happens once, here, rather than being bolted onto individual
 // components downstream — every number on the page (stat cards, both
 // tables, both charts, the open-case list) is computed from this same
 // filtered dataset, so drilling into a branch or item scopes everything
 // at once instead of some pieces filtering and others not.
-export async function fetchDashboardData(filters: DashboardFilters = {}): Promise<DashboardData> {
+export async function fetchDashboardData(supabase: SupabaseClient, filters: DashboardFilters = {}): Promise<DashboardData> {
   let lossesQuery = supabase
     .from('equipment_losses')
     .select('id, branch_id, item_id, quantity_missing, estimated_cost, status, assigned_to, created_at');
