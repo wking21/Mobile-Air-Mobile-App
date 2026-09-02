@@ -1,0 +1,513 @@
+-- Ancillary Reconciliation schema.
+-- Run this once in the Supabase project's SQL Editor (Dashboard > SQL Editor > New query).
+-- The table/policy/publication statements are safe to re-run. The demo seed
+-- data below is not deduplicated (deliveries/pickups have no natural unique
+-- key) — re-running this script on a project that already has data will add
+-- a second copy of the demo rows, which is harmless but worth knowing.
+
+create extension if not exists pgcrypto; -- gen_random_uuid()
+
+create table if not exists branches (
+  id bigint primary key,
+  name text not null,
+  region text not null,
+  service_manager_email text not null
+);
+
+create table if not exists item_master (
+  id bigint primary key,
+  name text not null,
+  category text not null,
+  unit_cost numeric not null
+);
+
+create table if not exists deliveries (
+  id uuid primary key default gen_random_uuid(),
+  branch_id bigint not null references branches(id),
+  item_id bigint not null references item_master(id),
+  qty integer not null,
+  date date not null,
+  notes text not null default '',
+  status text not null default 'planned' check (status in ('planned', 'completed')),
+  confirmed_qty integer,
+  completed_at date,
+  completion_notes text,
+  created_at timestamptz not null default now()
+);
+
+create table if not exists pickups (
+  id uuid primary key default gen_random_uuid(),
+  branch_id bigint not null references branches(id),
+  item_id bigint not null references item_master(id),
+  qty integer not null,
+  date date not null,
+  notes text not null default '',
+  status text not null default 'planned' check (status in ('planned', 'completed')),
+  confirmed_qty integer,
+  completed_at date,
+  completion_notes text,
+  created_at timestamptz not null default now()
+);
+
+-- One row per (branch, item) pair once someone has marked it reviewed in the
+-- Reconciliation tab. Absence of a row means "not yet reviewed".
+create table if not exists reconciliation_reviews (
+  branch_id bigint not null references branches(id),
+  item_id bigint not null references item_master(id),
+  reviewed boolean not null default true,
+  updated_at timestamptz not null default now(),
+  primary key (branch_id, item_id)
+);
+
+-- Running delivered/picked totals per (branch, item) pair — maintained
+-- incrementally by the trigger below, never recomputed by scanning
+-- deliveries/pickups at read time. Size scales with the number of distinct
+-- pairs that have ever had activity, not with transaction volume, same as
+-- equipment_losses below. (An earlier version of this had
+-- reconciliation_summary compute these sums fresh on every read via a
+-- GROUP BY over the full deliveries/pickups tables — fine at a few hundred
+-- rows, but at hundreds of thousands of rows that scan started exceeding
+-- Supabase's statement timeout on ordinary app loads. This table is the
+-- fix: the trigger already computes these exact sums per-pair via an
+-- indexed query for the loss-detection check, so maintaining this table
+-- piggybacks on that at no extra query cost.)
+create table if not exists reconciliation_totals (
+  branch_id bigint not null references branches(id),
+  item_id bigint not null references item_master(id),
+  delivered numeric not null default 0,
+  picked numeric not null default 0,
+  primary key (branch_id, item_id)
+);
+
+-- One row per active loss investigation for a (branch, item) pair.
+-- Auto-created/kept current by the trigger below whenever completed
+-- deliveries/pickups leave that pair's on-hand count negative. Workflow:
+-- 'open' (detected, needs an owner + explanation) -> 'pending_approval'
+-- (owner submitted resolution_notes) -> 'resolved' (approver signed off).
+-- An approver can also reject a pending case back to 'open' with
+-- rejection_notes explaining why. Note: with no auth yet, assigned_to /
+-- approved_by are free-text names/emails, not real user references — that
+-- tightens up once Microsoft sign-in is added.
+create table if not exists equipment_losses (
+  id uuid primary key default gen_random_uuid(),
+  branch_id bigint not null references branches(id),
+  item_id bigint not null references item_master(id),
+  quantity_missing integer not null,
+  estimated_cost numeric not null,
+  status text not null default 'open' check (status in ('open', 'pending_approval', 'resolved')),
+  assigned_to text,
+  resolution_notes text,
+  submitted_for_approval_at timestamptz,
+  approved_by text,
+  approved_at timestamptz,
+  rejection_notes text,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
+);
+
+-- Recomputes on-hand for the (branch, item) pair the changed row belongs to
+-- and opens (or refreshes the numbers on) a loss case when it's negative.
+-- Only ever opens ONE case per pair at a time — if one is already open or
+-- pending approval, its quantity/cost gets updated in place instead of a
+-- duplicate case being created.
+create or replace function check_for_equipment_loss() returns trigger as $$
+declare
+  v_branch_id bigint := coalesce(new.branch_id, old.branch_id);
+  v_item_id bigint := coalesce(new.item_id, old.item_id);
+  v_delivered numeric;
+  v_picked numeric;
+  v_on_hand numeric;
+  v_unit_cost numeric;
+  v_existing_case uuid;
+begin
+  select coalesce(sum(coalesce(confirmed_qty, qty)), 0) into v_delivered
+    from deliveries where branch_id = v_branch_id and item_id = v_item_id and status = 'completed';
+  select coalesce(sum(coalesce(confirmed_qty, qty)), 0) into v_picked
+    from pickups where branch_id = v_branch_id and item_id = v_item_id and status = 'completed';
+
+  v_on_hand := v_delivered - v_picked;
+
+  insert into reconciliation_totals (branch_id, item_id, delivered, picked)
+    values (v_branch_id, v_item_id, v_delivered, v_picked)
+    on conflict (branch_id, item_id) do update
+      set delivered = excluded.delivered, picked = excluded.picked;
+
+  if v_on_hand < 0 then
+    select id into v_existing_case from equipment_losses
+      where branch_id = v_branch_id and item_id = v_item_id and status in ('open', 'pending_approval')
+      limit 1;
+
+    select unit_cost into v_unit_cost from item_master where id = v_item_id;
+
+    if v_existing_case is null then
+      insert into equipment_losses (branch_id, item_id, quantity_missing, estimated_cost)
+        values (v_branch_id, v_item_id, abs(v_on_hand)::integer, abs(v_on_hand) * v_unit_cost);
+    else
+      update equipment_losses
+        set quantity_missing = abs(v_on_hand)::integer,
+            estimated_cost = abs(v_on_hand) * v_unit_cost,
+            updated_at = now()
+        where id = v_existing_case;
+    end if;
+  end if;
+
+  return coalesce(new, old);
+end;
+$$ language plpgsql;
+
+drop trigger if exists trg_deliveries_check_loss on deliveries;
+create trigger trg_deliveries_check_loss
+  after insert or update on deliveries
+  for each row execute function check_for_equipment_loss();
+
+drop trigger if exists trg_pickups_check_loss on pickups;
+create trigger trg_pickups_check_loss
+  after insert or update on pickups
+  for each row execute function check_for_equipment_loss();
+
+-- Indexes for scale: the trigger above runs two filtered SUM queries on
+-- every insert/update, and the app's list screens/stats do similar filtered
+-- lookups. Partial indexes here only cover the rows each query actually
+-- filters by, so they stay small and fast even at millions of rows.
+create index if not exists idx_deliveries_branch_item_completed
+  on deliveries (branch_id, item_id)
+  where status = 'completed';
+
+create index if not exists idx_pickups_branch_item_completed
+  on pickups (branch_id, item_id)
+  where status = 'completed';
+
+create index if not exists idx_deliveries_status_planned
+  on deliveries (status)
+  where status = 'planned';
+
+create index if not exists idx_pickups_status_planned
+  on pickups (status)
+  where status = 'planned';
+
+create index if not exists idx_deliveries_date_id
+  on deliveries (date desc, id desc);
+
+create index if not exists idx_pickups_date_id
+  on pickups (date desc, id desc);
+
+create index if not exists idx_equipment_losses_branch_item_active
+  on equipment_losses (branch_id, item_id)
+  where status in ('open', 'pending_approval');
+
+create index if not exists idx_equipment_losses_created_at
+  on equipment_losses (created_at desc);
+
+-- Server-side reconciliation aggregate — now a thin join over the
+-- incrementally-maintained reconciliation_totals table (see above) instead
+-- of a GROUP BY recomputed from deliveries/pickups on every read. Size and
+-- read cost both scale with the number of distinct (branch, item) pairs
+-- that have ever had activity, not with transaction volume.
+create or replace view reconciliation_summary
+  with (security_invoker = true) -- evaluate RLS as the querying role, not the view owner, so this stays correct once RLS is tightened past today's "anyone can read everything"
+as
+select
+  rt.branch_id,
+  rt.item_id,
+  rt.delivered,
+  rt.picked,
+  rt.delivered - rt.picked as on_hand,
+  coalesce(rr.reviewed, false) as reviewed
+from reconciliation_totals rt
+left join reconciliation_reviews rr
+  on rr.branch_id = rt.branch_id and rr.item_id = rt.item_id;
+
+-- Asset-level tracking, working toward replacing Texada's ticket
+-- generation/QR workflow. Infor already generates and owns the QR
+-- code/Asset Number association for serialized equipment — this table
+-- never invents its own numbering or prints new QR codes. asset_number is
+-- always a real Infor Asset Number, captured by scanning the tag already
+-- on the equipment (see the mobile app's Scan Asset flow). What this table
+-- adds — the reason it exists — is current_branch_id/status: live per-asset
+-- location, which neither Texada nor Infor tracks today. Not every catalog
+-- item needs this — item_master's is_serialized flag is the switch, off by
+-- default.
+alter table item_master add column if not exists is_serialized boolean not null default false;
+
+create table if not exists assets (
+  id uuid primary key default gen_random_uuid(),
+  asset_number text not null unique,
+  item_id bigint not null references item_master(id),
+  photo_url text,
+  current_branch_id bigint references branches(id),
+  status text not null default 'at_branch' check (status in ('at_branch', 'out_on_delivery', 'lost', 'retired')),
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
+);
+
+create index if not exists idx_assets_item_id on assets(item_id);
+create index if not exists idx_assets_current_branch_id on assets(current_branch_id);
+
+-- Links a delivery/pickup ticket to the specific serialized asset(s) it
+-- covered. A ticket for a non-serialized item just has no rows here — qty
+-- on the delivery/pickup row is still how those are tracked.
+create table if not exists delivery_assets (
+  delivery_id uuid not null references deliveries(id) on delete cascade,
+  asset_id uuid not null references assets(id),
+  primary key (delivery_id, asset_id)
+);
+
+create table if not exists pickup_assets (
+  pickup_id uuid not null references pickups(id) on delete cascade,
+  asset_id uuid not null references assets(id),
+  primary key (pickup_id, asset_id)
+);
+
+-- A photo taken at the moment a delivery/pickup is marked complete —
+-- documents condition/what actually left or came back, and is what a
+-- generated ticket (a later phase) will embed alongside the asset list.
+alter table deliveries add column if not exists completion_photo_url text;
+alter table pickups add column if not exists completion_photo_url text;
+
+-- Role-based access: who can see which branches' data. role is a free-text
+-- label (not a fixed enum) — it's informational (useful for a future admin
+-- screen), not something access control branches on beyond the 'executive'
+-- special case in user_can_access_branch() below. Every other title
+-- (service manager, regional manager, whatever gets added later) is
+-- handled identically: a user sees exactly the branches listed for them in
+-- user_branch_access. A "regional manager" is just a user with one row per
+-- branch in their region — no separate region-based rule needed.
+--
+-- Deliberately no insert/update/delete policy on either table below (see
+-- the RLS section) — assigning roles/branches is an admin action done
+-- directly in the Supabase Table Editor (which bypasses RLS), not a
+-- self-service app feature.
+create table if not exists user_profiles (
+  user_id uuid primary key references auth.users(id) on delete cascade,
+  role text not null,
+  created_at timestamptz not null default now()
+);
+
+create table if not exists user_branch_access (
+  user_id uuid not null references auth.users(id) on delete cascade,
+  branch_id bigint not null references branches(id),
+  primary key (user_id, branch_id)
+);
+
+-- The single place branch-scoping logic lives, so every policy below reads
+-- the same rule instead of repeating it. True if the calling user is an
+-- executive (sees every branch, including ones added after they were made
+-- executive — no per-branch rows needed for that) or has an explicit
+-- user_branch_access row naming this branch.
+create or replace function user_can_access_branch(p_branch_id bigint) returns boolean
+language sql stable
+as $$
+  select exists (
+    select 1 from user_profiles where user_id = auth.uid() and role = 'executive'
+  ) or exists (
+    select 1 from user_branch_access where user_id = auth.uid() and branch_id = p_branch_id
+  );
+$$;
+
+-- security definer so this checks whether a link objectively exists at
+-- all, not just whether the querying user can see one — delivery_assets
+-- is itself RLS-scoped, so an ordinary query here would report "no link"
+-- for a link that exists but belongs to a branch the caller can't see,
+-- which is exactly backwards for the assets policy below (that gap would
+-- make an already-claimed asset look brand-new to everyone else). This
+-- only ever reveals a yes/no fact, never which branch or delivery.
+create or replace function asset_has_any_delivery_link(p_asset_id uuid) returns boolean
+language sql stable security definer
+set search_path = public, pg_temp
+as $$
+  select exists (select 1 from delivery_assets where asset_id = p_asset_id);
+$$;
+
+-- Seed data — the same demo branches/items/deliveries/pickups the app
+-- originally shipped with as in-memory mocks, now coming from a shared
+-- database instead of a per-device array.
+insert into branches (id, name, region, service_manager_email) values
+  (1, 'North Branch', 'North', 'north.manager@example.com'),
+  (2, 'South Branch', 'South', 'south.manager@example.com'),
+  (3, 'Central Branch', 'Central', 'central.manager@example.com'),
+  (4, 'East Branch', 'East', 'east.manager@example.com')
+on conflict (id) do nothing;
+
+insert into item_master (id, name, category, unit_cost) values
+  (1, 'Folding Table 6ft', 'Furniture', 45),
+  (2, 'Banquet Chair', 'Furniture', 12),
+  (3, '10x10 Canopy Tent', 'Structures', 220),
+  (4, 'Portable Generator 5kW', 'Equipment', 650),
+  (5, 'Pallet Jack', 'Equipment', 310),
+  (6, 'Rolling Cooler 150qt', 'Coolers', 95),
+  (7, 'Patio Heater', 'Equipment', 180),
+  (8, 'Hand Dolly', 'Equipment', 60)
+on conflict (id) do nothing;
+
+insert into deliveries (branch_id, item_id, qty, date, notes, status, confirmed_qty, completed_at, completion_notes) values
+  (1, 1, 20, '2026-08-10', 'Event setup', 'completed', 20, '2026-08-10', ''),
+  (1, 3, 2, '2026-08-10', '', 'completed', 2, '2026-08-10', ''),
+  (2, 4, 1, '2026-08-12', 'Backup power', 'completed', 1, '2026-08-12', ''),
+  (3, 6, 10, '2026-08-15', '', 'completed', 10, '2026-08-15', ''),
+  (4, 2, 50, '2026-08-18', 'Conference', 'completed', 50, '2026-08-18', ''),
+  (2, 4, 1, '2026-08-20', 'Second unit', 'completed', 1, '2026-08-20', ''),
+  (1, 1, 10, '2026-08-22', '', 'completed', 10, '2026-08-22', '')
+on conflict do nothing;
+
+insert into pickups (branch_id, item_id, qty, date, notes, status, confirmed_qty, completed_at, completion_notes) values
+  (1, 1, 18, '2026-08-20', 'Partial return', 'completed', 18, '2026-08-20', ''),
+  (2, 4, 2, '2026-08-25', 'Both units returned', 'completed', 2, '2026-08-25', ''),
+  (3, 6, 4, '2026-08-24', '', 'completed', 4, '2026-08-24', ''),
+  (4, 2, 50, '2026-08-24', '', 'completed', 50, '2026-08-24', ''),
+  (1, 3, 3, '2026-08-26', '', 'completed', 3, '2026-08-26', '')
+on conflict do nothing;
+
+-- Row Level Security. Branch-scoped tables now check user_can_access_branch()
+-- instead of a flat "authenticated" — see that function above for what
+-- counts as access. item_master stays "any authenticated user": it's a
+-- global catalog, not branch data.
+alter table branches enable row level security;
+alter table item_master enable row level security;
+alter table deliveries enable row level security;
+alter table pickups enable row level security;
+alter table reconciliation_reviews enable row level security;
+alter table reconciliation_totals enable row level security;
+alter table equipment_losses enable row level security;
+alter table assets enable row level security;
+alter table delivery_assets enable row level security;
+alter table pickup_assets enable row level security;
+alter table user_profiles enable row level security;
+alter table user_branch_access enable row level security;
+
+-- Read-only, own-row-only. There's deliberately no insert/update/delete
+-- policy on these two tables — see the comment where they're created.
+drop policy if exists "read own profile" on user_profiles;
+create policy "read own profile" on user_profiles for select using (user_id = auth.uid());
+
+drop policy if exists "read own branch access" on user_branch_access;
+create policy "read own branch access" on user_branch_access for select using (user_id = auth.uid());
+
+drop policy if exists "anon full access" on branches;
+drop policy if exists "authenticated full access" on branches;
+create policy "authenticated full access" on branches for all using (user_can_access_branch(id)) with check (user_can_access_branch(id));
+
+drop policy if exists "anon full access" on item_master;
+drop policy if exists "authenticated full access" on item_master;
+create policy "authenticated full access" on item_master for all using (auth.role() = 'authenticated') with check (auth.role() = 'authenticated');
+
+drop policy if exists "anon full access" on deliveries;
+drop policy if exists "authenticated full access" on deliveries;
+create policy "authenticated full access" on deliveries for all using (user_can_access_branch(branch_id)) with check (user_can_access_branch(branch_id));
+
+drop policy if exists "anon full access" on pickups;
+drop policy if exists "authenticated full access" on pickups;
+create policy "authenticated full access" on pickups for all using (user_can_access_branch(branch_id)) with check (user_can_access_branch(branch_id));
+
+drop policy if exists "anon full access" on reconciliation_reviews;
+drop policy if exists "authenticated full access" on reconciliation_reviews;
+create policy "authenticated full access" on reconciliation_reviews for all using (user_can_access_branch(branch_id)) with check (user_can_access_branch(branch_id));
+
+drop policy if exists "anon full access" on reconciliation_totals;
+drop policy if exists "authenticated full access" on reconciliation_totals;
+create policy "authenticated full access" on reconciliation_totals for all using (user_can_access_branch(branch_id)) with check (user_can_access_branch(branch_id));
+
+drop policy if exists "anon full access" on equipment_losses;
+drop policy if exists "authenticated full access" on equipment_losses;
+create policy "authenticated full access" on equipment_losses for all using (user_can_access_branch(branch_id)) with check (user_can_access_branch(branch_id));
+
+-- assets has no branch_id of its own — current_branch_id is null the
+-- moment a unit is scanned out on delivery (see upsertScannedAsset in
+-- src/api/dataService.ts), so read access falls back to whichever
+-- delivery most recently linked it. upsertScannedAsset does
+-- .upsert(...).select().single(), which requires the written row to pass
+-- this SAME using clause immediately after the write (Postgres/PostgREST
+-- can't return a row RLS says you can't see) — a brand-new scan has
+-- neither a branch nor a delivery link yet (linkAssetToDelivery is a
+-- separate statement right after), so without the third clause below
+-- every first-ever scan would fail outright. That clause's cost: a unit
+-- is briefly visible to any authenticated user only for the sliver of
+-- time between its very first scan and that same request's follow-up
+-- link — every subsequent scan of the same unit has delivery history, so
+-- the second clause takes over and properly scopes it from then on.
+drop policy if exists "anon full access" on assets;
+drop policy if exists "authenticated full access" on assets;
+create policy "authenticated full access" on assets for all
+  using (
+    (current_branch_id is not null and user_can_access_branch(current_branch_id))
+    or exists (
+      select 1 from delivery_assets da join deliveries d on d.id = da.delivery_id
+      where da.asset_id = assets.id and user_can_access_branch(d.branch_id)
+    )
+    or (current_branch_id is null and not asset_has_any_delivery_link(assets.id))
+  )
+  with check (current_branch_id is null or user_can_access_branch(current_branch_id));
+
+-- delivery_assets/pickup_assets have no branch_id either — the relevant
+-- branch is whichever delivery/pickup they link to.
+drop policy if exists "anon full access" on delivery_assets;
+drop policy if exists "authenticated full access" on delivery_assets;
+create policy "authenticated full access" on delivery_assets for all
+  using (exists (select 1 from deliveries d where d.id = delivery_assets.delivery_id and user_can_access_branch(d.branch_id)))
+  with check (exists (select 1 from deliveries d where d.id = delivery_assets.delivery_id and user_can_access_branch(d.branch_id)));
+
+drop policy if exists "anon full access" on pickup_assets;
+drop policy if exists "authenticated full access" on pickup_assets;
+create policy "authenticated full access" on pickup_assets for all
+  using (exists (select 1 from pickups p where p.id = pickup_assets.pickup_id and user_can_access_branch(p.branch_id)))
+  with check (exists (select 1 from pickups p where p.id = pickup_assets.pickup_id and user_can_access_branch(p.branch_id)));
+
+-- Rollout safety: every existing account defaults to executive the moment
+-- this runs, so nobody already using the app gets locked out. An admin
+-- then downgrades specific accounts to a scoped role + assigns their
+-- branch(es) via the Supabase Table Editor, at their own pace.
+insert into user_profiles (user_id, role)
+select id, 'executive' from auth.users
+on conflict (user_id) do nothing;
+
+-- Realtime: push live inserts/updates for these tables to subscribed clients
+-- so multiple technicians/branches see the same data without refreshing.
+-- Wrapped so re-running this script doesn't error if a table is already added.
+do $$
+begin
+  if not exists (
+    select 1 from pg_publication_tables
+    where pubname = 'supabase_realtime' and tablename = 'deliveries'
+  ) then
+    alter publication supabase_realtime add table deliveries;
+  end if;
+  if not exists (
+    select 1 from pg_publication_tables
+    where pubname = 'supabase_realtime' and tablename = 'pickups'
+  ) then
+    alter publication supabase_realtime add table pickups;
+  end if;
+  if not exists (
+    select 1 from pg_publication_tables
+    where pubname = 'supabase_realtime' and tablename = 'reconciliation_reviews'
+  ) then
+    alter publication supabase_realtime add table reconciliation_reviews;
+  end if;
+  if not exists (
+    select 1 from pg_publication_tables
+    where pubname = 'supabase_realtime' and tablename = 'equipment_losses'
+  ) then
+    alter publication supabase_realtime add table equipment_losses;
+  end if;
+  if not exists (
+    select 1 from pg_publication_tables
+    where pubname = 'supabase_realtime' and tablename = 'assets'
+  ) then
+    alter publication supabase_realtime add table assets;
+  end if;
+end $$;
+
+-- Storage bucket for asset photos and delivery/pickup completion photos.
+-- Public read (so a generated ticket or the dashboard can just link to the
+-- image directly) — the bucket itself being "public" already serves files
+-- at their public URL regardless of this policy, so read access isn't
+-- gated by auth. Uploads ARE gated: only a signed-in user can add files.
+insert into storage.buckets (id, name, public)
+values ('asset-photos', 'asset-photos', true)
+on conflict (id) do nothing;
+
+drop policy if exists "asset-photos public read" on storage.objects;
+create policy "asset-photos public read" on storage.objects for select using (bucket_id = 'asset-photos');
+
+drop policy if exists "asset-photos anon upload" on storage.objects;
+drop policy if exists "asset-photos authenticated upload" on storage.objects;
+create policy "asset-photos authenticated upload" on storage.objects for insert with check (bucket_id = 'asset-photos' and auth.role() = 'authenticated');
