@@ -9,6 +9,7 @@ export interface ItemMaster {
   id: number;
   name: string;
   category: string;
+  isSerialized: boolean;
 }
 
 export interface LossCase {
@@ -22,12 +23,47 @@ export interface LossCase {
   createdAt: string;
 }
 
+// One row per item that currently has any activity. currentlyOut mirrors
+// the mobile app's reconciliation view (delivered-minus-picked) and works
+// for every item, serialized or not. availableUnits/inUseUnits only exist
+// for is_serialized items, since those are the only ones with individually
+// scanned units (the `assets` table) — for everything else we have no
+// concept of total fleet size, so "available" can't be computed at all.
+// currentlyOut and inUseUnits can legitimately disagree for a serialized
+// item: scanning a unit at delivery/pickup is optional, so a delivery's
+// confirmed qty can outrun how many of its specific units actually got
+// scanned.
+export interface InventoryItemRow {
+  itemId: number;
+  itemName: string;
+  category: string;
+  isSerialized: boolean;
+  currentlyOut: number;
+  availableUnits: number | null;
+  inUseUnits: number | null;
+}
+
+// A specific serialized unit that's out on delivery right now, and the
+// delivery ticket it's tied to — the closest thing this app has to "what
+// contract it's occupied with" until Infor contract data is connected.
+export interface OutstandingAssetRow {
+  assetId: string;
+  assetNumber: string;
+  itemId: number;
+  itemName: string;
+  branchId: number | null;
+  branchName: string;
+  deliveryDate: string | null;
+}
+
 export interface DashboardData {
   branches: Branch[];
   items: ItemMaster[];
   lossCases: LossCase[];
   completedDeliveryCount: number;
   completedPickupCount: number;
+  inventory: InventoryItemRow[];
+  outstandingAssets: OutstandingAssetRow[];
 }
 
 export interface DashboardFilters {
@@ -83,12 +119,31 @@ export async function fetchDashboardData(filters: DashboardFilters = {}): Promis
     pickupsQuery = pickupsQuery.eq('item_id', filters.itemId);
   }
 
-  const [branchesRes, itemsRes, lossesRes, deliveriesRes, pickupsRes] = await Promise.all([
+  // Inventory reflects right now, not a date range — the from/to filters
+  // above don't apply here, only the branch/item drill-down does.
+  let reconciliationQuery = supabase.from('reconciliation_summary').select('branch_id, item_id, on_hand');
+  if (filters.branchId !== undefined) reconciliationQuery = reconciliationQuery.eq('branch_id', filters.branchId);
+  if (filters.itemId !== undefined) reconciliationQuery = reconciliationQuery.eq('item_id', filters.itemId);
+
+  // Only at_branch/out_on_delivery matter for a "what's available vs in
+  // use" view — lost/retired units are already covered by the loss-case
+  // sections above. current_branch_id is null once a unit is out on
+  // delivery, so branch-scoping "in use" units happens afterward via the
+  // delivery they're linked to, not this column.
+  let assetsQuery = supabase
+    .from('assets')
+    .select('id, asset_number, item_id, status, current_branch_id, delivery_assets(deliveries(id, branch_id, date))')
+    .in('status', ['at_branch', 'out_on_delivery']);
+  if (filters.itemId !== undefined) assetsQuery = assetsQuery.eq('item_id', filters.itemId);
+
+  const [branchesRes, itemsRes, lossesRes, deliveriesRes, pickupsRes, reconciliationRes, assetsRes] = await Promise.all([
     supabase.from('branches').select('id, name').order('id'),
-    supabase.from('item_master').select('id, name, category').order('id'),
+    supabase.from('item_master').select('id, name, category, is_serialized').order('id'),
     lossesQuery,
     deliveriesQuery,
     pickupsQuery,
+    reconciliationQuery,
+    assetsQuery,
   ]);
 
   if (branchesRes.error) throw branchesRes.error;
@@ -96,10 +151,85 @@ export async function fetchDashboardData(filters: DashboardFilters = {}): Promis
   if (lossesRes.error) throw lossesRes.error;
   if (deliveriesRes.error) throw deliveriesRes.error;
   if (pickupsRes.error) throw pickupsRes.error;
+  if (reconciliationRes.error) throw reconciliationRes.error;
+  if (assetsRes.error) throw assetsRes.error;
+
+  const branches = branchesRes.data;
+  const items: ItemMaster[] = itemsRes.data.map(row => ({
+    id: row.id,
+    name: row.name,
+    category: row.category,
+    isSerialized: row.is_serialized,
+  }));
+  const branchName = (id: number | null) => branches.find(b => b.id === id)?.name ?? 'Unknown branch';
+
+  const onHandByItem = new Map<number, number>();
+  for (const row of reconciliationRes.data) {
+    onHandByItem.set(row.item_id, (onHandByItem.get(row.item_id) ?? 0) + Number(row.on_hand));
+  }
+
+  type AssetJoinRow = {
+    id: string;
+    asset_number: string;
+    item_id: number;
+    status: string;
+    current_branch_id: number | null;
+    // Supabase's untyped client can't know delivery_id/asset_id is a 1:1
+    // link here, so the nested relation comes back as an array either way.
+    delivery_assets: { deliveries: { id: string; branch_id: number; date: string }[] | null }[];
+  };
+
+  // A unit can rack up delivery history over its lifetime; the one it's
+  // CURRENTLY out on is whichever delivery linked to it most recently.
+  function latestDelivery(row: AssetJoinRow) {
+    const deliveries = row.delivery_assets.flatMap(link => link.deliveries ?? []);
+    if (deliveries.length === 0) return null;
+    return deliveries.reduce((latest, d) => (d.date > latest.date ? d : latest));
+  }
+
+  const availableByItem = new Map<number, number>();
+  const inUseByItem = new Map<number, number>();
+  const outstandingAssets: OutstandingAssetRow[] = [];
+
+  for (const row of assetsRes.data as AssetJoinRow[]) {
+    if (row.status === 'at_branch') {
+      if (filters.branchId !== undefined && row.current_branch_id !== filters.branchId) continue;
+      availableByItem.set(row.item_id, (availableByItem.get(row.item_id) ?? 0) + 1);
+    } else {
+      const delivery = latestDelivery(row);
+      if (filters.branchId !== undefined && delivery?.branch_id !== filters.branchId) continue;
+      inUseByItem.set(row.item_id, (inUseByItem.get(row.item_id) ?? 0) + 1);
+      outstandingAssets.push({
+        assetId: row.id,
+        assetNumber: row.asset_number,
+        itemId: row.item_id,
+        itemName: items.find(i => i.id === row.item_id)?.name ?? 'Unknown item',
+        branchId: delivery?.branch_id ?? null,
+        branchName: branchName(delivery?.branch_id ?? null),
+        deliveryDate: delivery?.date ?? null,
+      });
+    }
+  }
+
+  const relevantItemIds = new Set([...onHandByItem.keys(), ...availableByItem.keys(), ...inUseByItem.keys()]);
+  const inventory: InventoryItemRow[] = Array.from(relevantItemIds)
+    .map(itemId => {
+      const master = items.find(i => i.id === itemId);
+      return {
+        itemId,
+        itemName: master?.name ?? 'Unknown item',
+        category: master?.category ?? '',
+        isSerialized: master?.isSerialized ?? false,
+        currentlyOut: onHandByItem.get(itemId) ?? 0,
+        availableUnits: master?.isSerialized ? (availableByItem.get(itemId) ?? 0) : null,
+        inUseUnits: master?.isSerialized ? (inUseByItem.get(itemId) ?? 0) : null,
+      };
+    })
+    .sort((a, b) => b.currentlyOut - a.currentlyOut);
 
   return {
-    branches: branchesRes.data,
-    items: itemsRes.data,
+    branches,
+    items,
     lossCases: lossesRes.data.map(row => ({
       id: row.id,
       branchId: row.branch_id,
@@ -112,5 +242,7 @@ export async function fetchDashboardData(filters: DashboardFilters = {}): Promis
     })),
     completedDeliveryCount: deliveriesRes.count ?? 0,
     completedPickupCount: pickupsRes.count ?? 0,
+    inventory,
+    outstandingAssets: outstandingAssets.sort((a, b) => (a.deliveryDate ?? '').localeCompare(b.deliveryDate ?? '')),
   };
 }
