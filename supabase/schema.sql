@@ -303,11 +303,12 @@ insert into pickups (branch_id, item_id, qty, date, notes, status, confirmed_qty
   (1, 3, 3, '2026-08-26', '', 'completed', 3, '2026-08-26', '')
 on conflict do nothing;
 
--- Row Level Security. Enabled with a permissive "anyone with the anon key
--- can read/write" policy for now, since the app has no login step yet.
--- TODO before any real rollout: replace these with policies scoped to an
--- authenticated user/branch once auth is added — do not ship this open
--- policy to production with real customer/financial data.
+-- Row Level Security. Any signed-in user can read/write everything below —
+-- the app has no per-branch access restriction in its UI (any staff member
+-- can log a delivery/pickup for any branch), so the policy mirrors that:
+-- the bar is "authenticated", not "authenticated AND owns this branch".
+-- What this blocks is the anon key alone (baked into the compiled app)
+-- granting access with no login at all.
 alter table branches enable row level security;
 alter table item_master enable row level security;
 alter table deliveries enable row level security;
@@ -320,34 +321,44 @@ alter table delivery_assets enable row level security;
 alter table pickup_assets enable row level security;
 
 drop policy if exists "anon full access" on branches;
-create policy "anon full access" on branches for all using (true) with check (true);
+drop policy if exists "authenticated full access" on branches;
+create policy "authenticated full access" on branches for all using (auth.role() = 'authenticated') with check (auth.role() = 'authenticated');
 
 drop policy if exists "anon full access" on item_master;
-create policy "anon full access" on item_master for all using (true) with check (true);
+drop policy if exists "authenticated full access" on item_master;
+create policy "authenticated full access" on item_master for all using (auth.role() = 'authenticated') with check (auth.role() = 'authenticated');
 
 drop policy if exists "anon full access" on deliveries;
-create policy "anon full access" on deliveries for all using (true) with check (true);
+drop policy if exists "authenticated full access" on deliveries;
+create policy "authenticated full access" on deliveries for all using (auth.role() = 'authenticated') with check (auth.role() = 'authenticated');
 
 drop policy if exists "anon full access" on pickups;
-create policy "anon full access" on pickups for all using (true) with check (true);
+drop policy if exists "authenticated full access" on pickups;
+create policy "authenticated full access" on pickups for all using (auth.role() = 'authenticated') with check (auth.role() = 'authenticated');
 
 drop policy if exists "anon full access" on reconciliation_reviews;
-create policy "anon full access" on reconciliation_reviews for all using (true) with check (true);
+drop policy if exists "authenticated full access" on reconciliation_reviews;
+create policy "authenticated full access" on reconciliation_reviews for all using (auth.role() = 'authenticated') with check (auth.role() = 'authenticated');
 
 drop policy if exists "anon full access" on reconciliation_totals;
-create policy "anon full access" on reconciliation_totals for all using (true) with check (true);
+drop policy if exists "authenticated full access" on reconciliation_totals;
+create policy "authenticated full access" on reconciliation_totals for all using (auth.role() = 'authenticated') with check (auth.role() = 'authenticated');
 
 drop policy if exists "anon full access" on equipment_losses;
-create policy "anon full access" on equipment_losses for all using (true) with check (true);
+drop policy if exists "authenticated full access" on equipment_losses;
+create policy "authenticated full access" on equipment_losses for all using (auth.role() = 'authenticated') with check (auth.role() = 'authenticated');
 
 drop policy if exists "anon full access" on assets;
-create policy "anon full access" on assets for all using (true) with check (true);
+drop policy if exists "authenticated full access" on assets;
+create policy "authenticated full access" on assets for all using (auth.role() = 'authenticated') with check (auth.role() = 'authenticated');
 
 drop policy if exists "anon full access" on delivery_assets;
-create policy "anon full access" on delivery_assets for all using (true) with check (true);
+drop policy if exists "authenticated full access" on delivery_assets;
+create policy "authenticated full access" on delivery_assets for all using (auth.role() = 'authenticated') with check (auth.role() = 'authenticated');
 
 drop policy if exists "anon full access" on pickup_assets;
-create policy "anon full access" on pickup_assets for all using (true) with check (true);
+drop policy if exists "authenticated full access" on pickup_assets;
+create policy "authenticated full access" on pickup_assets for all using (auth.role() = 'authenticated') with check (auth.role() = 'authenticated');
 
 -- Realtime: push live inserts/updates for these tables to subscribed clients
 -- so multiple technicians/branches see the same data without refreshing.
@@ -388,8 +399,9 @@ end $$;
 
 -- Storage bucket for asset photos and delivery/pickup completion photos.
 -- Public read (so a generated ticket or the dashboard can just link to the
--- image directly) — same permissive posture as everything else here; see
--- the RLS TODO above.
+-- image directly) — the bucket itself being "public" already serves files
+-- at their public URL regardless of this policy, so read access isn't
+-- gated by auth. Uploads ARE gated: only a signed-in user can add files.
 insert into storage.buckets (id, name, public)
 values ('asset-photos', 'asset-photos', true)
 on conflict (id) do nothing;
@@ -398,4 +410,5 @@ drop policy if exists "asset-photos public read" on storage.objects;
 create policy "asset-photos public read" on storage.objects for select using (bucket_id = 'asset-photos');
 
 drop policy if exists "asset-photos anon upload" on storage.objects;
-create policy "asset-photos anon upload" on storage.objects for insert with check (bucket_id = 'asset-photos');
+drop policy if exists "asset-photos authenticated upload" on storage.objects;
+create policy "asset-photos authenticated upload" on storage.objects for insert with check (bucket_id = 'asset-photos' and auth.role() = 'authenticated');
